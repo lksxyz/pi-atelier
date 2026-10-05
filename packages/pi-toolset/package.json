@@ -1,6 +1,6 @@
 {
   "name": "@lukisxyz/pi-toolset",
-  "version": "1.0.90",
+  "version": "1.0.0",
   "type": "module",
   "description": "Manage all @lukisxyz/pi-* extensions dynamically: install the core set, add additional ones, update, remove.",
   "license": "MIT",

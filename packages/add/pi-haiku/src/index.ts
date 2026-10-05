@@ -1,5 +1,6 @@
 /**
- * Senja — fork of pi-haiku 0.2.0 by nocte (MIT).
+ * Haiku — header & footer UI from pi-haiku / nocte (MIT).
+ * Uses whatever theme is active in Pi (e.g. omarchy-system) without overriding it.
  *
  * Layout:
  *   • Line 1: location left, provider ▪ model ▪ effort right
@@ -7,7 +8,7 @@
  *   • Line 3 (optional): raw extension statuses
  *
  * Usage:
- *   /senja       Toggle on/off
+ *   /haiku       Toggle on/off
  */
 
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -544,18 +545,18 @@ export default function (pi: ExtensionAPI) {
   }
 
   // Toggle command.
-  pi.registerCommand("senja", {
-    description: "Toggle the Senja header and footer",
+  pi.registerCommand("haiku", {
+    description: "Toggle the Haiku header and footer",
     handler: async (_args, ctx) => {
       if (ctx.mode !== "tui") {
-        if (ctx.hasUI) ctx.ui.notify("Senja requires terminal UI mode", "info");
+        if (ctx.hasUI) ctx.ui.notify("Haiku requires terminal UI mode", "info");
         return;
       }
       enabled = !enabled;
       if (enabled) {
         applyFooter(ctx);
         applyHeader(ctx);
-        ctx.ui.notify("Senja enabled", "info");
+        ctx.ui.notify("Haiku enabled", "info");
       } else {
         restoreFooter(ctx);
         restoreHeader(ctx);
@@ -573,11 +574,6 @@ export default function (pi: ExtensionAPI) {
 
     if (event.reason === "startup") {
       clearVisibleScreenOnStartup();
-    }
-
-    const result = ctx.ui.setTheme("senja");
-    if (!result.success) {
-      ctx.ui.notify(`Senja theme: ${result.error ?? "unknown error"}`, "warning");
     }
 
     if (enabled) {

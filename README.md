@@ -16,18 +16,17 @@ It retains the upstream MIT license and copyright notices. This repository is th
 packages/
 ├── core/        → essential extensions (installed by the toolset)
 │   ├── pi-core-ask/
+│   ├── pi-core-goal/
 │   ├── pi-core-skill-tool/
 │   ├── pi-core-subagent/
 │   ├── pi-core-todo/
-│   ├── pi-core-tps-stats/
 │   └── pi-core-vision/
 ├── add/         → optional/extra extensions (opt in)
-│   ├── pi-add-9router/
 │   ├── pi-add-code-diagnostic/
 │   ├── pi-add-commandcode/
-│   ├── pi-add-vantis/
-│   ├── pi-add-wafer/
-│   └── pi-senja/
+│   ├── pi-add-deliberate/
+│   ├── pi-add-haiku/
+│   └── pi-add-mode/
 └── pi-toolset/  → installer: manage the installed set
 ```
 
@@ -64,20 +63,18 @@ pi -e npm:@lukisxyz/pi-core-vision
 | [`@lukisxyz/pi-core-skill-tool`](packages/core/pi-core-skill-tool) | Skills catalog, lazy `skill` tool |
 | [`@lukisxyz/pi-core-subagent`](packages/core/pi-core-subagent) | Fast in-process subagents, dependency scheduler |
 | [`@lukisxyz/pi-core-todo`](packages/core/pi-core-todo) | Flat/nested todos, direct-child progress, bounded tree UI + blockedBy |
-| [`@lukisxyz/pi-core-tps-stats`](packages/core/pi-core-tps-stats) | Live tokens-per-second stats |
+| [`@lukisxyz/pi-core-goal`](packages/core/pi-core-goal) | Session-log-backed long-running objective mode |
 | [`@lukisxyz/pi-core-vision`](packages/core/pi-core-vision) | Vision fallback for text-only models |
 
 ## 🧩 Add-on extensions
 
 | Package | Purpose for |
 | --- | --- |
-| [`@lukisxyz/pi-add-9router`](packages/add/pi-add-9router) | 9router provider registration + model discovery |
 | [`@lukisxyz/pi-add-code-diagnostic`](packages/add/pi-add-code-diagnostic) | Repo-scoped typecheck/lint diagnostics |
 | [`@lukisxyz/pi-add-commandcode`](packages/add/pi-add-commandcode) | Command Code Provider API: 58 models, dual-endpoint routing, ZDR |
+| [`@lukisxyz/pi-add-deliberate`](packages/add/pi-add-deliberate) | Deliberate advise and plan modes backed by subagent |
+| [`@lukisxyz/pi-add-haiku`](packages/add/pi-add-haiku) | Clean header, footer, and timer following Pi's active theme |
 | [`@lukisxyz/pi-add-mode`](packages/add/pi-add-mode) | Named modes: instructions + tools + model + subagent model, `/mode` and `ctrl+tab` |
-| [`@lukisxyz/pi-add-vantis`](packages/add/pi-add-vantis) | Vantis integration |
-| [`@lukisxyz/pi-add-wafer`](packages/add/pi-add-wafer) | Wafer integration |
-| [`@lukisxyz/pi-senja`](packages/add/pi-senja) | Haiku-style header/footer with the Gruvbox Material Senja palette |
 
 ## 🔧 Manage the set
 
