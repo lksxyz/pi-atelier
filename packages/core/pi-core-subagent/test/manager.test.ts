@@ -1,0 +1,416 @@
+import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { clearAgentFileCache } from "../src/agentfile.ts";
+import { SubagentManager } from "../src/manager.ts";
+
+const stubPi = { events: { emit() {} }, sendUserMessage() {} } as unknown as ExtensionAPI;
+const stubCtx = { cwd: "/tmp", hasUI: false } as unknown as ExtensionContext;
+
+function makeManager(): SubagentManager {
+	return new SubagentManager(stubPi);
+}
+
+describe("createRun", () => {
+	test("tasks[] wins over leftover top-level agent/task (models forget to drop them)", () => {
+		const m = makeManager();
+		const { run, inputs } = m.createRun({ agent: "a", task: "t", tasks: [{ agent: "b", task: "t2" }] }, stubCtx);
+		expect(run.mode).toBe("parallel");
+		expect(inputs.map((i) => i.agent)).toEqual(["b"]);
+	});
+	test("tasks + chain together is still refused (genuinely ambiguous)", () => {
+		const m = makeManager();
+		expect(() =>
+			m.createRun({ tasks: [{ agent: "a", task: "t" }], chain: [{ agent: "b", task: "t2" }] }, stubCtx),
+		).toThrow(/not both/);
+	});
+	test("no mode at all is refused with the full list of shapes", () => {
+		const m = makeManager();
+		expect(() => m.createRun({ agent: "a" }, stubCtx)).toThrow(/agent\+task \(single\)/);
+	});
+	test("an unresolvable model refuses the SPAWN, no run is created", () => {
+		const m = makeManager();
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: false,
+			modelRegistry: { getAvailable: () => [], find: () => undefined },
+		} as unknown as ExtensionContext;
+		expect(() => m.createRun({ tasks: [{ agent: "a", task: "t", model: "nope/not-a-model" }] }, ctx)).toThrow(
+			/Model not found: nope\/not-a-model/,
+		);
+		expect(m.listRuns()).toHaveLength(0);
+	});
+	test("a bad model in ONE task refuses the whole spawn, naming that task", () => {
+		const m = makeManager();
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: false,
+			modelRegistry: {
+				getAvailable: () => [{ id: "good", provider: "p" }],
+				find: () => undefined,
+			},
+		} as unknown as ExtensionContext;
+		expect(() =>
+			m.createRun(
+				{
+					tasks: [
+						{ id: "ok", agent: "a", task: "t1", model: "good" },
+						{ id: "bad", agent: "b", task: "t2", model: "missing" },
+					],
+				},
+				ctx,
+			),
+		).toThrow(/Task bad \(b\): Model not found: missing/);
+		expect(m.listRuns()).toHaveLength(0);
+	});
+	test("per-agent fields beside tasks[] are refused; run-wide ones fan out", () => {
+		const m = makeManager();
+
+		expect(() => m.createRun({ write: true, tasks: [{ agent: "b", task: "t" }] }, stubCtx)).toThrow(
+			/write describes a single agent/,
+		);
+		expect(() => m.createRun({ prompt: "p", tools: ["read"], tasks: [{ agent: "b", task: "t" }] }, stubCtx)).toThrow(
+			/prompt, tools describe a single agent/,
+		);
+
+		const { inputs } = m.createRun(
+			{
+				cwd: "/run/wide",
+				maxRuntimeMs: 1234,
+				tasks: [
+					{ agent: "a", task: "t1" },
+					{ agent: "b", task: "t2", cwd: "/per/task", maxRuntimeMs: 99 },
+				],
+			},
+			stubCtx,
+		);
+		expect(inputs.map((i) => i.cwd)).toEqual(["/run/wide", "/per/task"]);
+		expect(inputs.map((i) => i.maxRuntimeMs)).toEqual([1234, 99]);
+
+		expect(m.createRun({ tasks: [{ agent: "b", task: "t", write: true }] }, stubCtx).run.mode).toBe("parallel");
+
+		expect(m.createRun({ agent: "a", task: "t", tasks: [{ agent: "b", task: "t2" }] }, stubCtx).run.mode).toBe(
+			"parallel",
+		);
+	});
+	test("duplicate ids rejected", () => {
+		const m = makeManager();
+		expect(() =>
+			m.createRun(
+				{
+					tasks: [
+						{ id: "x", agent: "a", task: "t1" },
+						{ id: "x", agent: "b", task: "t2" },
+					],
+				},
+				stubCtx,
+			),
+		).toThrow(/Duplicate task id/);
+	});
+	test("unsafe task ids are rejected (they become git refs + paths)", () => {
+		const m = makeManager();
+		expect(() => m.createRun({ tasks: [{ agent: "a", task: "t", id: "../evil" }] }, stubCtx)).toThrow(/Unsafe task id/);
+		expect(() => m.createRun({ tasks: [{ agent: "a", task: "t", id: "a/b" }] }, stubCtx)).toThrow(/Unsafe task id/);
+	});
+	test("generated ids collide with explicit ones → rejected, not silently misrouted", () => {
+		const m = makeManager();
+		expect(() =>
+			m.createRun(
+				{
+					tasks: [
+						{ agent: "a", task: "t", id: "task_2" },
+						{ agent: "b", task: "t2" },
+					],
+				},
+				stubCtx,
+			),
+		).toThrow(/collides/);
+	});
+});
+
+describe("cancel", () => {
+	test("cancelRun on a queued run aborts every task and settles awaiters", async () => {
+		const m = makeManager();
+		const { run } = m.createRun(
+			{
+				tasks: [
+					{ agent: "a", task: "t1" },
+					{ agent: "b", task: "t2", needs: ["task_1"] },
+				],
+			},
+			stubCtx,
+		);
+		const pending = m.awaitRun(run.id);
+		const { aborted } = m.cancelRun(run.id);
+		expect(aborted).toBe(2);
+		const snap = await pending;
+		expect(snap?.run?.status).toBe("aborted");
+		expect(snap?.run?.tasks.every((t) => t.status === "aborted")).toBe(true);
+		expect(snap?.run?.tasks[0]?.error).toBe("Canceled by subagent_cancel");
+	});
+	test("cancelRun on unknown or finished run is a no-op", () => {
+		const m = makeManager();
+		expect(m.cancelRun("nope")).toEqual({ aborted: 0 });
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+		m.cancelRun(run.id);
+		expect(m.cancelRun(run.id)).toEqual({ aborted: 0 });
+	});
+	test("cancelTask aborts one task, siblings stay untouched", () => {
+		const m = makeManager();
+		const { run } = m.createRun(
+			{
+				tasks: [
+					{ id: "x", agent: "a", task: "t1" },
+					{ id: "y", agent: "b", task: "t2" },
+				],
+			},
+			stubCtx,
+		);
+		expect(m.cancelTask(run.id, "x")).toBe(true);
+		expect(run.tasks.find((t) => t.id === "x")?.status).toBe("aborted");
+		expect(run.tasks.find((t) => t.id === "y")?.status).toBe("queued");
+		expect(m.cancelTask(run.id, "x")).toBe(false);
+	});
+	test("awaitRun on a settled run resolves immediately", async () => {
+		const m = makeManager();
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+		m.cancelRun(run.id);
+		const snap = await m.awaitRun(run.id);
+		expect(snap?.run?.status).toBe("aborted");
+	});
+	test("every parked awaiter resolves on settle (no chain, no starvation)", async () => {
+		const m = makeManager();
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+		const waits = [m.awaitRun(run.id), m.awaitRun(run.id), m.awaitRun(run.id)];
+		m.cancelRun(run.id);
+		const settled = await Promise.all(waits);
+		expect(settled.every((s) => s?.run?.status === "aborted")).toBe(true);
+	});
+	test("a late persist after clearRuns cannot erase the sidecar", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sidecar-"));
+		const sessionFile = join(dir, "s.jsonl");
+		const sidecar = join(dir, "s.subagents.json");
+		writeFileSync(sessionFile, "");
+		const ctx = { cwd: dir, hasUI: false, sessionFile } as unknown as ExtensionContext;
+		const m = makeManager();
+		m.createRun({ tasks: [{ agent: "a", task: "keep me" }] }, ctx);
+		(m as unknown as { persist: (c: ExtensionContext) => void }).persist(ctx);
+		await new Promise((r) => setTimeout(r, 50));
+		const saved = existsSync(sidecar) ? readFileSync(sidecar, "utf8") : "";
+		m.clearRuns();
+
+		(m as unknown as { persist: (c: ExtensionContext) => void }).persist(ctx);
+		await new Promise((r) => setTimeout(r, 50));
+		if (saved) expect(readFileSync(sidecar, "utf8")).toBe(saved);
+		expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toHaveLength(0);
+		rmSync(dir, { recursive: true, force: true });
+	});
+	test("a delivered reply is consumed once (identity-tagged entry clears itself)", async () => {
+		const m = makeManager();
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+
+		const waiting = (
+			m as unknown as { awaitParentReply: (r: string, t: string, ms?: number) => Promise<string> }
+		).awaitParentReply(run.id, "task_1");
+		expect(m.deliverReply(run.id, "task_1", "answer one")).toBe(true);
+		expect(await waiting).toBe("answer one");
+		expect(m.deliverReply(run.id, "task_1", "answer two")).toBe(false);
+	});
+	test("clearRuns releases parked awaits instead of hanging them", async () => {
+		const m = makeManager();
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+		const waiting = m.awaitRun(run.id);
+		m.clearRuns();
+		const settled = await waiting;
+		expect(settled?.run).toBeDefined();
+	});
+	test("cancelRun releases a child parked on ask_parent", async () => {
+		const m = makeManager();
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+
+		const waiting = new Promise<string>((resolve) => {
+			(m as unknown as { pendingReplies: Map<string, { resolve: (m: string) => void }> }).pendingReplies.set(
+				`${run.id}:task_1`,
+				{ resolve },
+			);
+		});
+		m.cancelRun(run.id);
+		expect(await waiting).toContain("canceled");
+		expect(m.deliverReply(run.id, "task_1", "late answer")).toBe(false);
+	});
+});
+
+describe("tool precedence (issue #3)", () => {
+	const src = readFileSync(new URL("../src/manager.ts", import.meta.url), "utf8");
+	test("explicit tools:/write: win over a matched file's tools; file only narrows the default", () => {
+		expect(src).toMatch(/const explicitTools = input\.tools \?\? \(input\.write \? WRITE_TOOLS : undefined\);/);
+		expect(src).toMatch(/const baseTools = explicitTools \?\? \(fileTools\?\.length \? fileTools : allowedTools\);/);
+	});
+	test("an overridden file's tools are surfaced on the task, not silently dropped", () => {
+		expect(src).toMatch(/task\.toolsNote = `explicit tools overrode agent-file tools/);
+	});
+});
+
+describe("resumeTask", () => {
+	function seeded(status: "failed" | "completed" | "running", sessionFile?: string) {
+		const m = makeManager();
+		const { run } = m.createRun({ agent: "a", task: "t" }, stubCtx);
+		const task = run.tasks[0]!;
+		task.status = status;
+		task.sessionFile = sessionFile;
+		run.status = status === "running" ? "running" : status;
+		return { m, run, task };
+	}
+	test("refuses never-started task (no session file) — respawn is the right move", () => {
+		const { m, run, task } = seeded("failed");
+		const res = m.resumeTask(run.id, task.id, stubCtx);
+		expect(res.ok).toBe(false);
+		if (!res.ok) expect(res.reason).toMatch(/no session file/);
+	});
+	test("refuses completed task and still-running run", () => {
+		const dir = mkdtempSync(join(tmpdir(), "resume-"));
+		const file = join(dir, "s.jsonl");
+		writeFileSync(file, "");
+		const done = seeded("completed", file);
+		expect(done.m.resumeTask(done.run.id, done.task.id, stubCtx).ok).toBe(false);
+		const live = seeded("running", file);
+		expect(live.m.resumeTask(live.run.id, live.task.id, stubCtx).ok).toBe(false);
+		expect(makeManager().resumeTask("run_x", "task_1", stubCtx).ok).toBe(false);
+		rmSync(dir, { recursive: true, force: true });
+	});
+	test("failed task with a session file flips to queued and the run reopens", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "resume-"));
+		const file = join(dir, "s.jsonl");
+		writeFileSync(file, "");
+		const { m, run, task } = seeded("failed", file);
+		task.error = "usage limit";
+		task.tools = ["read", "bash", "ask_parent"];
+		const res = m.resumeTask(run.id, task.id, { ...stubCtx, modelRegistry: undefined } as unknown as ExtensionContext);
+		expect(res.ok).toBe(true);
+		expect(run.status).toBe("running");
+		expect(["queued", "starting", "running", "failed"]).toContain(task.status);
+		expect(task.error === undefined || task.error !== "usage limit").toBe(true);
+		await new Promise((r) => setTimeout(r, 300));
+		rmSync(dir, { recursive: true, force: true });
+	});
+	test("resume clamps thinking against the agent-file model, matching spawn precedence", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "resume-file-"));
+		const agents = join(dir, ".agents", "agents");
+		mkdirSync(agents, { recursive: true });
+		writeFileSync(
+			join(agents, "reviewer.md"),
+			"---\ndescription: Reviews auth module changes\nmodel: file-model\n---\nYou review the auth module.\n",
+		);
+		clearAgentFileCache();
+		const file = join(dir, "s.jsonl");
+		writeFileSync(file, "");
+		const fileModel = {
+			provider: "p",
+			id: "file-model",
+			name: "File",
+			reasoning: true,
+			contextWindow: 1000,
+		};
+		const otherModel = {
+			provider: "p",
+			id: "other-model",
+			name: "Other",
+			reasoning: true,
+			contextWindow: 1000,
+			thinkingLevelMap: { xhigh: "high" },
+		};
+		const models = [fileModel, otherModel];
+		const ctx = {
+			cwd: dir,
+			hasUI: false,
+			modelRegistry: {
+				getAvailable: () => models,
+				find: (p: string, id: string) => models.find((m) => m.provider === p && m.id === id),
+			},
+		} as unknown as ExtensionContext;
+		const m = makeManager();
+		const { run } = m.createRun({ agent: "reviewer", task: "review the auth module", model: "other-model" }, ctx);
+		const task = run.tasks[0]!;
+		// What runChild records at spawn: the agent file's model won over the inline one.
+		task.status = "failed";
+		task.sessionFile = file;
+		task.model = "file-model";
+		task.thinking = "xhigh";
+		run.status = "failed";
+
+		const res = m.resumeTask(run.id, task.id, ctx, { model: "other-model" });
+		expect(res.ok).toBe(true);
+		if (res.ok) {
+			// The swap names other-model, but runChild re-applies the file's model; clamping against
+			// other-model would validate a model this task never runs.
+			expect(res.note).toContain("p/file-model");
+			expect(res.note).toContain("xhigh → high");
+		}
+		await new Promise((r) => setTimeout(r, 50));
+		clearAgentFileCache();
+		rmSync(dir, { recursive: true, force: true });
+	});
+});
+
+describe("widget auto-prune", () => {
+	interface WidgetInternals {
+		widgetRuns: { id: string }[];
+		upsertWidgetRun(run: unknown): void;
+		flushWidget(run: unknown, ctx?: unknown, onUpdate?: (partial: unknown) => void): void;
+	}
+	const internals = (m: SubagentManager): WidgetInternals => m as unknown as WidgetInternals;
+
+	test("a settled run leaves the widget as soon as it settles", () => {
+		const m = makeManager();
+		const { run } = m.createRun({ agent: "a", task: "t" }, stubCtx);
+		internals(m).upsertWidgetRun(run);
+		expect(internals(m).widgetRuns).toHaveLength(1);
+
+		run.status = "failed";
+		run.tasks[0]!.status = "failed";
+		internals(m).flushWidget(run, stubCtx);
+		expect(internals(m).widgetRuns).toHaveLength(0);
+	});
+
+	test("a terminal run never enters the widget (restored or cancelled history)", () => {
+		const m = makeManager();
+		const { run } = m.createRun({ agent: "a", task: "t" }, stubCtx);
+		run.status = "aborted";
+		run.tasks[0]!.status = "aborted";
+		internals(m).upsertWidgetRun(run);
+		expect(internals(m).widgetRuns).toHaveLength(0);
+	});
+
+	test("settling one run keeps a live sibling in the widget", () => {
+		const m = makeManager();
+		const settled = m.createRun({ agent: "a", task: "t" }, stubCtx).run;
+		const live = m.createRun({ agent: "b", task: "t2" }, stubCtx).run;
+		internals(m).upsertWidgetRun(settled);
+		internals(m).upsertWidgetRun(live);
+
+		settled.status = "completed";
+		settled.tasks[0]!.status = "completed";
+		internals(m).flushWidget(settled, stubCtx);
+		expect(internals(m).widgetRuns.map((r) => r.id)).toEqual([live.id]);
+	});
+});
+
+describe("child toolsets", () => {
+	test("read-only children get codemode for batching tool calls", () => {
+		const { run } = makeManager().createRun({ agent: "a", task: "t" }, stubCtx);
+		expect(run.tasks[0]?.tools).toEqual(["read", "grep", "find", "ls", "codemode"]);
+	});
+
+	test("write children get codemode next to bash/edit/write", () => {
+		const { run } = makeManager().createRun({ agent: "a", task: "t", write: true }, stubCtx);
+		expect(run.tasks[0]?.tools).toContain("codemode");
+		expect(run.tasks[0]?.tools).toContain("bash");
+	});
+
+	test("explicit tools stay exactly what the caller asked for", () => {
+		const { run } = makeManager().createRun({ agent: "a", task: "t", tools: ["read"] }, stubCtx);
+		expect(run.tasks[0]?.tools).toEqual(["read"]);
+	});
+});

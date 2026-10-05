@@ -1,0 +1,30 @@
+{
+  "name": "@lukisxyz/pi-toolset",
+  "version": "1.0.90",
+  "type": "module",
+  "description": "Manage all @lukisxyz/pi-* extensions dynamically: install the core set, add additional ones, update, remove.",
+  "license": "MIT",
+  "bin": {
+    "pi-toolset": "./pi-toolset"
+  },
+  "files": [
+    "pi-toolset",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "toolset",
+    "extension-manager"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lksxyz/pi-atelier",
+    "directory": "packages/pi-toolset"
+  }
+}
