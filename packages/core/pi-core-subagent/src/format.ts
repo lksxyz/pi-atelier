@@ -2,6 +2,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+	isLive,
+	isSettled,
 	MAX_TASKS,
 	type ModelCatalog,
 	type ModelPricing,
@@ -9,7 +11,6 @@ import {
 	type RunStatus,
 	type TaskSnapshot,
 	type TaskStatus,
-	TERMINAL,
 	type UsageStats,
 } from "./types.ts";
 
@@ -42,6 +43,7 @@ export function statusIcon(status: TaskStatus | RunStatus): string {
 	if (status === "completed") return "✓";
 	if (status === "failed") return "✗";
 	if (status === "aborted") return "⏹";
+	if (status === "paused") return "⏸";
 	if (status === "awaiting_parent") return "❓";
 	if (status === "queued") return "○";
 	return "•";
@@ -54,7 +56,7 @@ function fmtDuration(ms: number | undefined): string {
 function taskTimer(task: TaskSnapshot): string {
 	if (task.startedAt === undefined) return "–";
 	const end = task.endedAt ?? Date.now();
-	const running = !TERMINAL.includes(task.status);
+	const running = isLive(task.status);
 	return `${running ? "running " : ""}${fmtDuration(end - task.startedAt)}`;
 }
 function taskStatsWithUsage(task: TaskSnapshot): string {
@@ -80,7 +82,7 @@ function themedTaskLine(task: TaskSnapshot, theme: Theme, activity = ""): string
 	const tag = theme.fg("dim", modelTag(task));
 	const gate =
 		task.status === "queued" && task.needs?.length ? `${theme.fg("muted", `↳ waits ${task.needs.join(", ")}`)} · ` : "";
-	if (TERMINAL.includes(task.status)) {
+	if (!isLive(task.status)) {
 		return theme.fg("dim", `${statusIcon(task.status)} ${task.agent}${tag} · ${tail}`);
 	}
 
@@ -143,8 +145,8 @@ export class SubagentsWidget implements Component {
 		const runs = this.getRuns().filter((r) => r.tasks.length > 0);
 		if (runs.length === 0) return [];
 		const total = runs.reduce((n, r) => n + r.tasks.length, 0);
-		const done = runs.reduce((n, r) => n + r.tasks.filter((t) => TERMINAL.includes(t.status)).length, 0);
-		const live = total - done;
+		const done = runs.reduce((n, r) => n + r.tasks.filter((t) => isSettled(t.status)).length, 0);
+		const live = runs.reduce((n, r) => n + r.tasks.filter((t) => isLive(t.status)).length, 0);
 		const head = live > 0 ? "accent" : "dim";
 		const lines = [
 			truncateToWidth(
@@ -154,11 +156,12 @@ export class SubagentsWidget implements Component {
 			),
 		];
 		const budget = WIDGET_MAX_LINES - 1;
-		// live tasks first so the budget never hides work in progress
+		// live first, then paused (work awaiting an explicit resume), then history
 		const all = runs.flatMap((run) => run.tasks);
 		const ordered = [
-			...all.filter((t) => !TERMINAL.includes(t.status)),
-			...all.filter((t) => TERMINAL.includes(t.status)),
+			...all.filter((t) => isLive(t.status)),
+			...all.filter((t) => t.status === "paused"),
+			...all.filter((t) => isSettled(t.status)),
 		];
 		let shown = 0;
 		for (const task of ordered) {
@@ -211,9 +214,10 @@ export function makeSummary(run: RunSnapshot): string {
 	const succeeded = run.tasks.filter((t) => t.status === "completed").length;
 	const failed = run.tasks.filter((t) => t.status === "failed").length;
 	const aborted = run.tasks.filter((t) => t.status === "aborted").length;
-	const done = TERMINAL.includes(run.status) ? "finished" : "running";
+	const paused = run.tasks.filter((t) => t.status === "paused").length;
+	const done = run.status === "paused" ? "paused" : isSettled(run.status) ? "finished" : "running";
 	const lines = [
-		`Run ${run.id}: Subagents ${run.mode} ${done}: ${succeeded}/${run.tasks.length} succeeded${failed ? `, ${failed} failed` : ""}${aborted ? `, ${aborted} aborted` : ""}.`,
+		`Run ${run.id}: Subagents ${run.mode} ${done}: ${succeeded}/${run.tasks.length} succeeded${failed ? `, ${failed} failed` : ""}${aborted ? `, ${aborted} aborted` : ""}${paused ? `, ${paused} paused (resume_subagent revives each)` : ""}.`,
 	];
 	const usage = formatUsage(run.aggregateUsage);
 	if (usage) lines.push(`Usage: ${usage}`);
@@ -222,8 +226,14 @@ export function makeSummary(run: RunSnapshot): string {
 		const fileNote = task.agentFile ? ` [${task.agentFile}]` : "";
 		const swap = task.modelNote ? `\nModel: ${task.modelNote}` : "";
 		const tools = task.toolsNote ? `\nTools: ${task.toolsNote}` : "";
+		const driver =
+			task.status === "paused"
+				? `\nNext: ${task.checkpoint?.nextAction ?? "resume_subagent"}`
+				: task.error
+					? `\nError: ${task.error}`
+					: `\n${truncateText(task.finalText || "(no output)")}`;
 		lines.push(
-			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${swap}${tools}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task, run.tasks)}`,
+			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${swap}${tools}${driver}${worktreeLine(task, run.tasks)}`,
 		);
 	}
 
@@ -272,6 +282,24 @@ export function makeNotice(run: RunSnapshot, kind: string): string {
 	}
 	lines.push(`Use subagent_result(runId: "${run.id}") for full output.`);
 	return lines.join("\n");
+}
+
+/**
+ * A reload left work that cannot resume by itself. The notice names every paused task, its recorded
+ * next action, and the explicit call that revives it — nothing is auto-resumed on the user's behalf.
+ */
+export function makePausedNotice(run: RunSnapshot): string {
+	const paused = run.tasks.filter((t) => t.status === "paused");
+	const lines = [
+		`Background subagent run ${run.id} paused after a reload: ${paused.length} paused, ${run.tasks.length - paused.length} finished. Nothing is running; a paused task resumes only when you ask.`,
+	];
+	for (const task of paused) {
+		lines.push(`- ${task.agent} (${task.id}) paused at: ${task.checkpoint?.progress ?? "unknown"}`);
+		if (task.checkpoint?.unresolved) lines.push(`  Unresolved: ${task.checkpoint.unresolved}`);
+		lines.push(`  Next: ${task.checkpoint?.nextAction ?? `resume_subagent(runId: "${run.id}", taskId: "${task.id}")`}`);
+	}
+	lines.push("Inspect the workspace before resuming — the checkpoint is a record, not a current state.");
+	return truncateText(lines.join("\n"));
 }
 
 /** Per-million-token rates, terse. A zero rate reads as "free"; absent rates are "unavailable", not free. */

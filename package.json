@@ -1,7 +1,6 @@
 {
 	"name": "pi-atelier",
 	"version": "0.0.0",
-	"private": true,
 	"description": "Monorepo for @lukisxyz pi extension packages (core + add) and the pi-toolset installer.",
 	"type": "module",
 	"workspaces": [

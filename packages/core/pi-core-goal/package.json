@@ -1,6 +1,6 @@
 {
   "name": "@lukisxyz/pi-core-goal",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "Session-log-backed long-running /goal mode for pi: automatic continuation after agent_settled, token budget, strict completion/blocked audits, cache-stable system prefix.",
   "license": "MIT",

@@ -414,3 +414,106 @@ describe("child toolsets", () => {
 		expect(run.tasks[0]?.tools).toEqual(["read"]);
 	});
 });
+
+describe("restore after a reload", () => {
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+
+	function sidecarDir(withChildSession: boolean) {
+		const dir = mkdtempSync(join(tmpdir(), "restore-"));
+		const parent = join(dir, "s.jsonl");
+		writeFileSync(parent, "");
+		const child = join(dir, "child.jsonl");
+		if (withChildSession) writeFileSync(child, "");
+		writeFileSync(
+			join(dir, "s.subagents.json"),
+			JSON.stringify([
+				{
+					id: "run_1",
+					mode: "single",
+					status: "running",
+					notifyPerTask: false,
+					createdAt: 1,
+					concurrency: 1,
+					aggregateUsage: usage,
+					tasks: [
+						{
+							id: "task_1",
+							runId: "run_1",
+							agent: "worker",
+							task: "refactor the parser",
+							cwd: dir,
+							status: "running",
+							toolCalls: 2,
+							usage,
+							sessionFile: child,
+							lastActivity: "Edit src/parser.ts",
+							branch: "subagent/run_1/task_1",
+							changedFiles: ["src/parser.ts"],
+						},
+					],
+				},
+			]),
+		);
+		const ctx = {
+			cwd: dir,
+			hasUI: false,
+			sessionManager: { getSessionFile: () => parent },
+		} as unknown as ExtensionContext;
+		return { dir, ctx, child };
+	}
+
+	function managerWith(sent: string[]): SubagentManager {
+		const pi = {
+			events: { emit() {} },
+			sendUserMessage: (text: string) => {
+				sent.push(text);
+			},
+		} as unknown as ExtensionAPI;
+		return new SubagentManager(pi);
+	}
+
+	test("an interrupted task with a session file is paused, not aborted, and says how to resume", async () => {
+		const { dir, ctx, child } = sidecarDir(true);
+		const sent: string[] = [];
+		const m = managerWith(sent);
+		await m.restoreFromSidecar(ctx);
+
+		const run = m.getRun("run_1");
+		expect(run?.status).toBe("paused");
+		const task = run?.tasks[0];
+		expect(task?.status).toBe("paused");
+		expect(task?.error).toBeUndefined();
+		expect(task?.sessionFile).toBe(child);
+		expect(task?.checkpoint?.progress).toBe("Edit src/parser.ts");
+		expect(task?.checkpoint?.branch).toBe("subagent/run_1/task_1");
+		expect(sent.join("\n")).toContain("paused");
+		expect(sent.join("\n")).toContain('resume_subagent(runId: "run_1", taskId: "task_1")');
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	test("an interrupted task whose session file is gone is aborted — nothing can revive it", async () => {
+		const { dir, ctx } = sidecarDir(false);
+		const m = managerWith([]);
+		await m.restoreFromSidecar(ctx);
+
+		const run = m.getRun("run_1");
+		expect(run?.status).toBe("aborted");
+		expect(run?.tasks[0]?.status).toBe("aborted");
+		expect(run?.tasks[0]?.error).toBe("Interrupted by session reload");
+		expect(run?.tasks[0]?.checkpoint).toBeUndefined();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	test("a restored paused task resumes; a live one is still refused", async () => {
+		const { dir, ctx } = sidecarDir(true);
+		const m = managerWith([]);
+		await m.restoreFromSidecar(ctx);
+		const resumeCtx = { ...ctx, modelRegistry: undefined } as unknown as ExtensionContext;
+
+		const res = m.resumeTask("run_1", "task_1", resumeCtx);
+		expect(res.ok).toBe(true);
+		expect(["queued", "starting", "running", "failed"]).toContain(m.getRun("run_1")?.tasks[0]?.status ?? "");
+		await new Promise((r) => setTimeout(r, 50));
+		rmSync(dir, { recursive: true, force: true });
+	});
+});

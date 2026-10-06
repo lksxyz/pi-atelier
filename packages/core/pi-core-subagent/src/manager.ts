@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { resolveAgentFile } from "./agentfile.ts";
+import { captureCheckpoint, resumePrompt } from "./checkpoint.ts";
 import { CHILD_TALK_TOOLS, type ChildHandlers, createChildTools } from "./child.ts";
 import {
 	activitySnippet,
@@ -31,6 +32,7 @@ import {
 	isTalking,
 	makeAskNotice,
 	makeNotice,
+	makePausedNotice,
 	makeTaskNotice,
 	SubagentsWidget,
 	truncateText,
@@ -40,6 +42,8 @@ import { createMailbox, type Mailbox } from "./mailbox.ts";
 import { chooseModel, resolveChildModel } from "./models.ts";
 import type { SubagentParamsShape, TaskInput } from "./schemas.ts";
 import {
+	isLive,
+	isSettled,
 	MAX_TASKS,
 	type PendingReply,
 	type RunDetails,
@@ -88,6 +92,8 @@ type ChildExtensionFactories = ConstructorParameters<typeof DefaultResourceLoade
  */
 async function codemodeFactories(): Promise<ChildExtensionFactories> {
 	try {
+		// SAFETY: `createCodemodeExtension` is optional and absent on hosts that predate codemode, so the
+		// cast states an optional field instead of asserting a shape the installed types do not declare.
 		const host = (await import("@earendil-works/pi-coding-agent")) as unknown as {
 			createCodemodeExtension?: () => unknown;
 		};
@@ -161,7 +167,8 @@ function updateUsageFromMessage(task: TaskSnapshot, message: AssistantMessage): 
 	if (message.model && !task.model) task.model = message.model;
 }
 export function cloneRun(run: RunSnapshot): RunSnapshot {
-	return JSON.parse(JSON.stringify(run)) as RunSnapshot;
+	// A snapshot is plain JSON data, so a structured clone copies it without the parse/serialize throw.
+	return structuredClone(run);
 }
 /**
  * A resumed task keeps its stored thinking level, clamped to what the target model accepts — a
@@ -319,7 +326,9 @@ export class SubagentManager {
 		try {
 			const cfg = JSON.parse(readFileSync(join(getAgentDir(), "subagents-config.json"), "utf8"));
 			if (typeof cfg.autoLimit === "boolean") this.autoLimit = cfg.autoLimit;
-		} catch {}
+		} catch {
+			/* ignore: no readable config means the default ceiling */
+		}
 	}
 
 	setAutoLimit(on: boolean): boolean {
@@ -347,7 +356,9 @@ export class SubagentManager {
 		if (ctx?.hasUI) {
 			try {
 				ctx.ui.setWidget("subagents", undefined);
-			} catch {}
+			} catch {
+				/* ignore: the host may not support widgets */
+			}
 		}
 	}
 
@@ -366,7 +377,7 @@ export class SubagentManager {
 
 		for (const run of this.runs.values()) {
 			for (const task of run.tasks) {
-				if (!TERMINAL.includes(task.status)) {
+				if (isLive(task.status)) {
 					task.status = "aborted";
 					task.error = task.error ?? "(session ended)";
 				}
@@ -413,42 +424,63 @@ export class SubagentManager {
 			for (const entry of readdirSync(dir)) {
 				if (entry.startsWith(prefix) && entry.endsWith(".tmp")) rmSync(join(dir, entry), { force: true });
 			}
-		} catch {}
+		} catch {
+			/* ignore: stale temp cleanup is opportunistic */
+		}
 		try {
 			if (!existsSync(sidecar)) return;
 			const raw = JSON.parse(readFileSync(sidecar, "utf-8"));
 			if (!Array.isArray(raw)) return;
 			runs = (raw as RunSnapshot[]).map((run) => {
-				const interrupted = run.tasks.some((t) => !TERMINAL.includes(t.status));
-
-				let status = interrupted ? ("aborted" as RunStatus) : run.status;
-				if (!TERMINAL.includes(status)) {
-					const anyFailed = run.tasks.some((t) => t.status === "failed");
-					const anyAborted = run.tasks.some((t) => t.status === "aborted");
+				// Work that stopped mid-flight is paused, never silently failed: a task whose session file
+				// survived resumes on request; one without it is aborted, because nothing can revive it.
+				const resumable = (t: TaskSnapshot) => Boolean(t.sessionFile && existsSync(t.sessionFile));
+				const tasks = run.tasks.map((t) => {
+					if (isSettled(t.status)) return t;
+					if (t.status === "paused") return { ...t, checkpoint: t.checkpoint ?? captureCheckpoint(t) };
+					if (resumable(t)) {
+						return {
+							...t,
+							status: "paused" as TaskStatus,
+							checkpoint: captureCheckpoint(t),
+							error: undefined,
+							endedAt: Date.now(),
+						};
+					}
+					return { ...t, status: "aborted" as TaskStatus, error: t.error || "Interrupted by session reload" };
+				});
+				const paused = tasks.filter((t) => t.status === "paused").length;
+				let status: RunStatus = run.status;
+				if (paused > 0) status = "paused";
+				else if (!isSettled(status)) {
+					const anyFailed = tasks.some((t) => t.status === "failed");
+					const anyAborted = tasks.some((t) => t.status === "aborted");
 					status = anyFailed ? "failed" : anyAborted ? "aborted" : "completed";
 				}
-				return {
-					...run,
-					status,
-					endedAt: interrupted ? Date.now() : run.endedAt,
-					tasks: run.tasks.map((t) =>
-						TERMINAL.includes(t.status)
-							? t
-							: { ...t, status: "aborted" as TaskStatus, error: t.error || "Interrupted by session reload" },
-					),
-				};
+				return { ...run, status, endedAt: paused > 0 ? undefined : (run.endedAt ?? Date.now()), tasks };
 			});
 		} catch {
 			return;
 		}
 		let added = 0;
+		const paused: RunSnapshot[] = [];
 		for (const run of runs) {
 			if (!run?.id || this.runs.has(run.id)) continue;
 			this.runs.set(run.id, run);
 			added += 1;
+			if (run.status === "paused") paused.push(run);
 		}
 		if (added > 0) {
 			this.emit("subagent:runs-restored", { count: added });
+			for (const run of paused) {
+				const body = makePausedNotice(run);
+				try {
+					this.pi.sendUserMessage(body, { deliverAs: "followUp" });
+				} catch {
+					// best effort: a lost notice must not break session start, and the run stays visible in the widget
+				}
+				this.emit("subagent:notification", { runId: run.id, kind: "paused", body });
+			}
 			this.scheduleWidget(this.listRuns()[0], ctx);
 		}
 	}
@@ -470,10 +502,14 @@ export class SubagentManager {
 					await rename(tmp, sidecar);
 					this.persistedSeq = seq;
 				} catch {
-					await rm(tmp, { force: true }).catch(() => {});
+					await rm(tmp, { force: true }).catch(() => {
+						/* ignore: the temp file may already be gone */
+					});
 				}
 			});
-		} catch {}
+		} catch {
+			/* ignore: persistence is best-effort, never fatal */
+		}
 	}
 
 	private emit(type: string, payload: Record<string, unknown>): void {
@@ -499,7 +535,9 @@ export class SubagentManager {
 		}
 		try {
 			this.pi.sendUserMessage(body, { deliverAs: this.deliverMode(kind, task) });
-		} catch {}
+		} catch {
+			/* ignore: a notice must not fail the task */
+		}
 		this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body });
 	}
 
@@ -519,7 +557,9 @@ export class SubagentManager {
 			this.pi.sendUserMessage(body, {
 				deliverAs: kind === "completed" || kind === "aborted" ? "followUp" : "steer",
 			});
-		} catch {}
+		} catch {
+			/* ignore: a notice must not fail the run */
+		}
 		this.emit("subagent:notification", { runId: run.id, taskId: extra?.taskId, kind, body });
 	}
 
@@ -610,7 +650,8 @@ export class SubagentManager {
 		this.emit("subagent:run-updated", {
 			runId: run.id,
 			status: run.status,
-			live: run.tasks.filter((t) => !TERMINAL.includes(t.status)).length,
+			shown: run.tasks.filter((t) => isSettled(t.status)).length,
+			live: run.tasks.filter((t) => isLive(t.status)).length,
 		});
 		this.scheduleWidget(run, ctx);
 	}
@@ -629,10 +670,10 @@ export class SubagentManager {
 	private makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): ChildHandlers {
 		return {
 			onAskParent: async (_taskId, question, urgent) => {
-				if (TERMINAL.includes(task.status)) {
+				if (!isLive(task.status)) {
 					return "(your task has already ended — stop work and return immediately)";
 				}
-				this.updateTask(run, task, { status: "awaiting_parent" }, ctx);
+				this.updateTask(run, task, { status: "awaiting_parent", pendingQuestion: question }, ctx);
 
 				if (!this.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
 					this.notifyParent(run, "asked", { taskId: task.id, agent: task.agent, question, urgent });
@@ -640,10 +681,10 @@ export class SubagentManager {
 
 				const reply = await this.awaitParentReply(run.id, task.id, PARENT_REPLY_TIMEOUT_MS);
 
-				if (TERMINAL.includes(task.status)) {
+				if (!isLive(task.status)) {
 					return "(your task was canceled while you waited — stop work and return immediately)";
 				}
-				this.updateTask(run, task, { status: "running" }, ctx);
+				this.updateTask(run, task, { status: "running", pendingQuestion: undefined }, ctx);
 				return reply;
 			},
 			onNotifyParent: (_taskId, message, level) => {
@@ -653,7 +694,9 @@ export class SubagentManager {
 				if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text: message })) return;
 				try {
 					this.pi.sendUserMessage(`[Subagent ${task.agent}] ${message}`, { deliverAs: "followUp" });
-				} catch {}
+				} catch {
+					/* ignore: a notice must not fail the child */
+				}
 			},
 			onSendMessage: (_taskId, to, text) => {
 				if (to === "leader") {
@@ -667,7 +710,9 @@ export class SubagentManager {
 					if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text })) return true;
 					try {
 						this.pi.sendUserMessage(`[Subagent ${task.agent}] ${text}`, { deliverAs: "followUp" });
-					} catch {}
+					} catch {
+						/* ignore: a message must not fail the child */
+					}
 					return true;
 				}
 
@@ -777,7 +822,7 @@ export class SubagentManager {
 		onUpdate?: (partial: any) => void,
 		resume?: ResumeInput,
 	): Promise<void> {
-		if (TERMINAL.includes(task.status)) return;
+		if (!isLive(task.status)) return;
 
 		const file = resolveAgentFile(input.agent, routingTask, task.cwd, getAgentDir());
 		if (file?.path) task.agentFile = file.path;
@@ -891,7 +936,9 @@ export class SubagentManager {
 				ctx,
 				onUpdate,
 			);
-		} catch {}
+		} catch {
+			/* ignore: a status update must not abort the child */
+		}
 
 		let keepWorktreeDir = false;
 		let child: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -973,7 +1020,7 @@ export class SubagentManager {
 				runController?.signal.removeEventListener("abort", abortChild);
 			};
 
-			if (run.status === "aborted" || TERMINAL.includes(task.status) || signal?.aborted) {
+			if (run.status === "aborted" || !isLive(task.status) || signal?.aborted) {
 				await child.abort();
 				throw new Error("Canceled by subagent_cancel");
 			}
@@ -1015,7 +1062,7 @@ export class SubagentManager {
 			if (task.status === "awaiting_parent") {
 				this.pendingReplies.get(key)?.resolve("(your task is being finalized — stop work and return now)");
 			}
-			if (!TERMINAL.includes(task.status)) {
+			if (isLive(task.status)) {
 				this.updateTask(run, task, { status: "completed", finalText, endedAt: Date.now() }, ctx, onUpdate);
 				if (wt) {
 					let committed: "committed" | "empty" | undefined;
@@ -1070,7 +1117,9 @@ export class SubagentManager {
 			try {
 				this.pendingReplies.get(key)?.resolve("(parent unreachable)");
 				await Promise.race([child?.abort(), new Promise((r) => setTimeout(r, 5000))]);
-			} catch {}
+			} catch {
+				/* ignore: the child may already be gone */
+			}
 
 			const salvaged =
 				task.finalText ||
@@ -1254,13 +1303,13 @@ export class SubagentManager {
 		const outputs = new Map<string, string>();
 		const settled = new Set<string>();
 		for (const task of run.tasks) {
-			if (TERMINAL.includes(task.status)) settled.add(task.id);
+			if (!isLive(task.status)) settled.add(task.id);
 		}
 
 		const inputById = new Map(run.tasks.map((t, i) => [t.id, inputs[i]]));
 
 		const { skipped } = await runWaveScheduler(
-			run.tasks.filter((t) => !TERMINAL.includes(t.status)),
+			run.tasks.filter((t) => isLive(t.status)),
 			run.mode === "single" ? 1 : run.concurrency,
 			outputs,
 			settled,
@@ -1296,7 +1345,7 @@ export class SubagentManager {
 
 		for (const s of skipped) {
 			const task = run.tasks.find((t) => t.id === s.id);
-			if (task && !TERMINAL.includes(task.status)) {
+			if (task && isLive(task.status)) {
 				this.updateTask(
 					run,
 					task,
@@ -1313,7 +1362,7 @@ export class SubagentManager {
 		}
 
 		for (const task of run.tasks) {
-			if (TERMINAL.includes(task.status)) continue;
+			if (!isLive(task.status)) continue;
 			this.updateTask(
 				run,
 				task,
@@ -1329,7 +1378,7 @@ export class SubagentManager {
 		run.endedAt = Date.now();
 		this.flushWidget(run, ctx, onUpdate);
 
-		const live = this.listRuns().find((r) => !TERMINAL.includes(r.status));
+		const live = this.listRuns().find((r) => !isSettled(r.status));
 		if (live) this.scheduleWidget(live, ctx);
 
 		if (this.settlers.has(run.id)) {
@@ -1353,7 +1402,9 @@ export class SubagentManager {
 				if (root) roots.add(root);
 			}
 			for (const root of roots) cleanupMerged(root, { skipBranches: this.liveBranches() });
-		} catch {}
+		} catch {
+			/* ignore: merged-branch cleanup is opportunistic */
+		}
 	}
 
 	ownsWorktree = (path: string): boolean => {
@@ -1377,7 +1428,7 @@ export class SubagentManager {
 				run.status = "failed";
 				run.endedAt = Date.now();
 				for (const task of run.tasks) {
-					if (!TERMINAL.includes(task.status)) {
+					if (isLive(task.status)) {
 						task.status = "failed";
 						task.error = task.error || String(err instanceof Error ? err.message : err);
 						task.endedAt = Date.now();
@@ -1402,15 +1453,14 @@ export class SubagentManager {
 		const run = this.runs.get(runId);
 		const task = run?.tasks.find((t) => t.id === taskId);
 		if (!run || !task) return { ok: false, reason: `Unknown ${runId}/${taskId}.` };
-		if (!TERMINAL.includes(task.status))
-			return { ok: false, reason: `${taskId} is still ${task.status} — use steer_subagent.` };
+		if (isLive(task.status)) return { ok: false, reason: `${taskId} is still ${task.status} — use steer_subagent.` };
 		if (task.status === "completed") return { ok: false, reason: `${taskId} completed — spawn a new task instead.` };
 		if (!task.sessionFile || !existsSync(task.sessionFile)) {
 			return { ok: false, reason: `${taskId} has no session file to resume (never started) — respawn it.` };
 		}
 		if (this.liveChildren.has(`${runId}:${taskId}`)) return { ok: false, reason: `${taskId} is already live.` };
 		// ponytail: resume only into a settled run — executeTasks' final sweep would abort a task revived mid-run. Upgrade: make the sweep skip tasks with a live child.
-		if (!TERMINAL.includes(run.status)) {
+		if (isLive(run.status)) {
 			return { ok: false, reason: `Run ${runId} is still ${run.status} — wait for it to settle before resuming.` };
 		}
 
@@ -1424,7 +1474,9 @@ export class SubagentManager {
 		let resumeModel: Model<Api> | undefined;
 		try {
 			resumeModel = resolveChildModel(ctx, chooseModel(file, opts.model ?? task.model).requested);
-		} catch {}
+		} catch {
+			/* ignore: runChild reports an unresolvable model with task context */
+		}
 		const requestedThinking = (opts.thinking ?? task.thinking) as ThinkingLevel | undefined;
 		const thinking = clampResumeThinking(resumeModel, requestedThinking);
 		const thinkingNote =
@@ -1445,9 +1497,7 @@ export class SubagentManager {
 		const resume: ResumeInput = {
 			sessionFile: task.sessionFile,
 			branch: task.branch,
-			message:
-				opts.message?.trim() ||
-				`Your previous turn ended with an error (${task.error ?? "unknown"}). Resume where you left off: briefly recap what you already did and what remains, then continue and finish the original task.`,
+			message: opts.message?.trim() || resumePrompt(task),
 		};
 
 		this.cleared = false;
@@ -1462,6 +1512,8 @@ export class SubagentManager {
 			diffStat: undefined,
 			changedFiles: undefined,
 			worktreeError: undefined,
+			checkpoint: undefined,
+			pendingQuestion: undefined,
 		});
 		run.status = "running";
 		run.endedAt = undefined;
@@ -1474,7 +1526,7 @@ export class SubagentManager {
 
 		void this.runChild(run, task, input, task.task, ctx, undefined, undefined, resume)
 			.catch((err) => {
-				if (!TERMINAL.includes(task.status)) {
+				if (isLive(task.status)) {
 					this.updateTask(
 						run,
 						task,
@@ -1522,7 +1574,7 @@ export class SubagentManager {
 	cancelTask(runId: string, taskId: string, ctx?: ExtensionContext): boolean {
 		const run = this.runs.get(runId);
 		const task = run?.tasks.find((t) => t.id === taskId);
-		if (!run || !task || TERMINAL.includes(task.status)) return false;
+		if (!run || !task || !isLive(task.status)) return false;
 
 		task.status = "aborted";
 		task.error = task.error || "Canceled from peek";
@@ -1539,7 +1591,7 @@ export class SubagentManager {
 	cancelRun(runId: string): { aborted: number } {
 		const run = this.runs.get(runId);
 		if (!run) return { aborted: 0 };
-		if (TERMINAL.includes(run.status)) return { aborted: 0 };
+		if (isSettled(run.status)) return { aborted: 0 };
 		let aborted = 0;
 		this.runControllers.get(runId)?.abort();
 
@@ -1622,7 +1674,7 @@ export class SubagentManager {
 			parked.delete(entry);
 			if (parked.size === 0) this.parked.delete(runId);
 		};
-		if (TERMINAL.includes(run.status)) {
+		if (!isLive(run.status)) {
 			run.awaited = true;
 			return Promise.resolve({ run: cloneRun(run), intercom: [] });
 		}

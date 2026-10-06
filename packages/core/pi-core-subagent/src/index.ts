@@ -24,7 +24,7 @@ import {
 	SubagentParams,
 	type SubagentParamsShape,
 } from "./schemas.ts";
-import { type ModelCatalog, type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
+import { isLive, type ModelCatalog, type RunDetails, type RunSnapshot } from "./types.ts";
 import { cleanupMerged, ownerAlive, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
 					taskId: task.id,
 					agent: task.agent,
 					status: task.status,
-					running: !TERMINAL.includes(task.status),
+					running: isLive(task.status),
 					sessionFile: task.sessionFile,
 					line: taskLine(task),
 				}));
@@ -122,14 +122,18 @@ export default function (pi: ExtensionAPI) {
 				reapDeadWorktrees(root, (p) => ownerAlive(p, manager.ownsWorktree));
 				cleanupMerged(root, { skipBranches: manager.liveBranches() });
 				sweepStale(root);
-			} catch {}
+			} catch {
+				/* ignore: worktree housekeeping must not block session start */
+			}
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx?.hasUI) {
 			try {
 				ctx.ui.setWidget("subagents", [], { placement: "aboveEditor" });
-			} catch {}
+			} catch {
+				/* ignore: the host may not support widgets */
+			}
 		}
 		manager.clearRuns();
 	});
@@ -165,7 +169,7 @@ export default function (pi: ExtensionAPI) {
 			"Never block with nothing to do: if you have no work left after spawning, end your turn — completion notifies you and wakes a fresh turn with the results. await_subagent/autoAwait while idle only burns time and tokens.",
 			"A failed task interrupts you immediately as a steering message — handle it in the same turn (resume, swap model, re-dispatch) instead of finishing the plan on a broken intermediate result. Completes and aborts queue as follow-ups.",
 			"autoAwait:true only when this SAME turn must consume the result immediately. await_subagent is for syncing with your own parallel work — not the default follow-up to a spawn.",
-			"A task that failed mid-work (provider error, rate limit, timeout) keeps its session file and branch: resume_subagent(runId, taskId, model?) revives it with full context — prefer that over respawning. Respawn only when it never started (no session file).",
+			"A task that failed mid-work (provider error, rate limit, timeout) — or that a session reload paused — keeps its session file and branch: resume_subagent(runId, taskId, model?) revives it with full context; prefer that over respawning. Respawn only when it never started (no session file).",
 		],
 		parameters: SubagentParams,
 		executionMode: "parallel",
@@ -176,7 +180,7 @@ export default function (pi: ExtensionAPI) {
 				let run = details.run;
 
 				const intercom: ParkedMsg[] = [];
-				while (!TERMINAL.includes(run.status)) {
+				while (isLive(run.status)) {
 					const awaited = await manager.awaitRun(details.run.id);
 					if (!awaited) break;
 					if (awaited.run) run = awaited.run;
@@ -404,7 +408,7 @@ export default function (pi: ExtensionAPI) {
 		name: "resume_subagent",
 		label: "Resume Subagent",
 		description:
-			"Revive a failed/aborted task in its original session (full context + worktree branch preserved). Optional `model` swaps provider (e.g. after a rate limit); optional `thinking` sets the effort — the stored level is clamped to what the target model accepts, so a resume never dies on an unsupported effort; optional `message` replaces the default 'recap and continue' prompt. Refuses tasks that never started — respawn those.",
+			"Revive a failed, aborted, or reload-paused task in its original session (full context + worktree branch preserved). Optional `model` swaps provider (e.g. after a rate limit); optional `thinking` sets the effort — the stored level is clamped to what the target model accepts, so a resume never dies on an unsupported effort; optional `message` replaces the default 'recap and continue' prompt. Refuses tasks that never started — respawn those.",
 		parameters: ResumeParam,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { runId, taskId, message, model, thinking } = params as {

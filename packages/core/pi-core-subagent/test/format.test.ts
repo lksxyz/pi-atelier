@@ -137,3 +137,18 @@ describe("SubagentsWidget", () => {
 		expect(out.split("\n")).toHaveLength(6);
 	});
 });
+
+describe("paused work in the widget", () => {
+	test("a paused task is neither live nor done, and stays visible with its own icon", () => {
+		const out = new SubagentsWidget(
+			() => [run([task({ id: "p1", agent: "paused-one", status: "paused" }), task({ id: "c1" })])],
+			plain,
+		)
+			.render(200)
+			.join("\n");
+
+		expect(out).toContain("Subagents (1/2)");
+		expect(out).toContain("⏸ paused-one");
+		expect(out).toContain("✓");
+	});
+});
