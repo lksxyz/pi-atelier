@@ -10,11 +10,20 @@
  */
 
 import { readFile } from "node:fs/promises";
-import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, getMarkdownTheme, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { Key, Text } from "@earendil-works/pi-tui";
+import {
+	Container,
+	fuzzyFilter,
+	Input,
+	Key,
+	matchesKey,
+	type SelectItem,
+	SelectList,
+	Text,
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	allowedTools,
@@ -201,10 +210,95 @@ async function configureMode(mode: DeliberateMode, ctx: ExtensionContext): Promi
 	}
 
 	const currentRef = existing.model ? modelRef(existing.model) : undefined;
-	const modelLabels = models.map((model) => `${modelRef(model)}${modelRef(model) === currentRef ? " (current)" : ""}`);
-	const modelChoice = await ctx.ui.select(`Deliberate ${mode}: choose model`, modelLabels);
+	const modelItems: SelectItem[] = models.map((candidate) => {
+		const ref = modelRef(candidate);
+		return {
+			value: ref,
+			label: ref === currentRef ? `${ref} (current)` : ref,
+		};
+	});
+	const modelChoice = await ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+		const input = new Input({ placeholder: "type to filter models" });
+		input.focused = true;
+		let list!: SelectList;
+		let filtered = modelItems;
+		let visibleCount = 1;
+		let query = "";
+		const container = new Container();
+
+		const rebuild = () => {
+			const selectedValue = list?.getSelectedItem()?.value;
+			container.clear();
+			container.addChild(new Text(theme.fg("accent", theme.bold(`Deliberate ${mode}: choose model`))));
+			container.addChild(input);
+			filtered = query ? fuzzyFilter(modelItems, query, (item) => item.value) : modelItems;
+			visibleCount = Math.max(1, Math.min(filtered.length, Math.floor(tui.terminal.rows / 2) - 4));
+			list = new SelectList(filtered, visibleCount, {
+				selectedPrefix: (text) => theme.fg("accent", text),
+				selectedText: (text) => theme.fg("accent", text),
+				description: (text) => theme.fg("muted", text),
+				scrollInfo: (text) => theme.fg("dim", text),
+				noMatch: (text) => theme.fg("warning", text),
+			});
+			if (selectedValue) {
+				const selectedIndex = filtered.findIndex((item) => item.value === selectedValue);
+				if (selectedIndex >= 0) list.setSelectedIndex(selectedIndex);
+			}
+			list.onSelect = (item) => done(item.value);
+			list.onCancel = () => done(undefined);
+			container.addChild(list);
+			container.addChild(
+				new Text(
+					theme.fg(
+						"dim",
+						`${filtered.length} model(s) · ↑↓ move · PgUp/PgDn page · type to filter · enter select · esc cancel`,
+					),
+				),
+			);
+		};
+		rebuild();
+
+		return {
+			render: (width) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data) => {
+				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+					done(undefined);
+					return;
+				}
+				if (matchesKey(data, "enter") || matchesKey(data, "return")) {
+					list.handleInput(data);
+					return;
+				}
+				if (matchesKey(data, "up") || matchesKey(data, "down")) {
+					list.handleInput(data);
+					tui.requestRender();
+					return;
+				}
+				if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
+					const selectedIndex = filtered.findIndex((item) => item.value === list.getSelectedItem()?.value);
+					const direction = matchesKey(data, "pageUp") ? -1 : 1;
+					list.setSelectedIndex(selectedIndex + direction * visibleCount);
+					tui.requestRender();
+					return;
+				}
+				input.handleInput(data);
+				const next = input.getValue();
+				if (next !== query) {
+					query = next;
+					rebuild();
+				}
+				tui.requestRender();
+			},
+			handleMouse: (event) => {
+				const result = list.handleMouse?.(event);
+				if (result?.render) tui.requestRender();
+				return result;
+			},
+		};
+	});
 	if (modelChoice === undefined) return cancelledStatus(mode, existing);
-	const model: Model<any> | undefined = models[modelLabels.indexOf(modelChoice)];
+	const model = models.find((candidate) => modelRef(candidate) === modelChoice);
 	if (!model) return cancelledStatus(mode, existing);
 
 	const levels = supportedThinkingLevels(model);

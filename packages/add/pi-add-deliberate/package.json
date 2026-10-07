@@ -1,6 +1,6 @@
 {
 	"name": "@lukisxyz/pi-add-deliberate",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "pi extension: deliberate advise/plan modes — configured read-only second opinions and research-first implementation plans, saved to a configured path.",
 	"license": "MIT",
 	"type": "module",
