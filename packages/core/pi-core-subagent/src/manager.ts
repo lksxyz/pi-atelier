@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { Cause, Deferred, Effect, Exit, Fiber, Option, Semaphore } from "effect";
 import { rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -37,7 +38,7 @@ import {
 	SubagentsWidget,
 	truncateText,
 } from "./format.ts";
-import { applyUpstream, resolveNeeds, runWaveScheduler } from "./graph.ts";
+import { applyUpstream, resolveNeeds, runWaveScheduler, runWaveSchedulerEffect } from "./graph.ts";
 import { createMailbox, type Mailbox } from "./mailbox.ts";
 import { chooseModel, resolveChildModel } from "./models.ts";
 import type { SubagentParamsShape, TaskInput } from "./schemas.ts";
@@ -90,19 +91,16 @@ type ChildExtensionFactories = ConstructorParameters<typeof DefaultResourceLoade
  * one exception, because it is how a child batches tool calls. `createCodemodeExtension()` is the
  * supported factory (pi >= 1.0); hosts that do not export it simply give children no codemode.
  */
-async function codemodeFactories(): Promise<ChildExtensionFactories> {
-	try {
-		// SAFETY: `createCodemodeExtension` is optional and absent on hosts that predate codemode, so the
-		// cast states an optional field instead of asserting a shape the installed types do not declare.
-		const host = (await import("@earendil-works/pi-coding-agent")) as unknown as {
-			createCodemodeExtension?: () => unknown;
-		};
-		const factory = host.createCodemodeExtension?.();
-		return factory ? ([factory] as ChildExtensionFactories) : [];
-	} catch {
-		return [];
-	}
-}
+const codemodeFactories = Effect.fnUntraced(function* (): Effect.fn.Return<ChildExtensionFactories> {
+	const imported = yield* Effect.tryPromise({
+		try: () => import("@earendil-works/pi-coding-agent"),
+		catch: () => undefined,
+	}).pipe(Effect.option);
+	if (Option.isNone(imported)) return [];
+	const host = imported.value as unknown as { createCodemodeExtension?: () => unknown };
+	const factory = host.createCodemodeExtension?.();
+	return factory ? ([factory] as ChildExtensionFactories) : [];
+});
 function emptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 }
@@ -200,55 +198,68 @@ function probeThinking(model: Model<Api>, thinking?: string): ThinkingLevel | un
 	return PROBE_THINKING_LEVELS.find((level) => supported.includes(level));
 }
 
-async function probeModel(
+const probeModel = Effect.fnUntraced(function* (
 	ctx: ExtensionContext,
 	model: Model<Api>,
 	signal: AbortSignal | undefined,
 	thinking?: string,
-): Promise<string | undefined> {
-	try {
-		const reasoningEffort = probeThinking(model, thinking);
-		const reply = await ctx.modelRegistry.complete(
+): Effect.fn.Return<string | undefined> {
+	const reasoningEffort = probeThinking(model, thinking);
+	const exit = yield* Effect.exit(Effect.tryPromise({
+		try: () => ctx.modelRegistry.complete(
 			model,
 			{ messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
 			{ maxTokens: 16, signal, ...(reasoningEffort ? { reasoningEffort } : {}) },
-		);
-		return reply.stopReason === "error" ? (reply.errorMessage ?? "provider returned an error") : undefined;
-	} catch (err) {
-		return err instanceof Error ? err.message : String(err);
+		),
+		catch: (error) => error instanceof Error ? error : new Error(String(error)),
+	}));
+	if (Exit.isFailure(exit)) {
+		const error = Cause.findErrorOption(exit.cause);
+		return Option.isSome(error) ? error.value.message : String(Cause.squash(exit.cause));
 	}
-}
+	return exit.value.stopReason === "error" ? (exit.value.errorMessage ?? "provider returned an error") : undefined;
+});
 
-export async function ensureUsableModel(
+const ensureUsableModelEffect = Effect.fnUntraced(function* (
+	ctx: ExtensionContext,
+	model: Model<Api> | undefined,
+	signal: AbortSignal | undefined,
+	thinking?: string,
+): Effect.fn.Return<{ model: Model<Api> | undefined; note?: string }, Error> {
+	const session = ctx.model;
+	if (!model || !ctx.modelRegistry) return { model };
+	if (session && model.provider === session.provider && model.id === session.id) return { model };
+	const error = yield* probeModel(ctx, model, signal, thinking);
+	if (!error) return { model };
+	if (model.provider === "opencode-go" && /MissingSessionID|x-opencode-session/i.test(error)) {
+		return { model, note: `preflight unavailable (${error}); child session will validate the model` };
+	}
+	if (!session) return yield* Effect.fail(new Error(`Model ${model.provider}/${model.id} is unusable: ${error}`));
+	return {
+		model: session,
+		note: `${model.provider}/${model.id} failed preflight (${error}); using session model ${session.provider}/${session.id}`,
+	};
+});
+
+export function ensureUsableModel(
 	ctx: ExtensionContext,
 	model: Model<Api> | undefined,
 	signal: AbortSignal | undefined,
 	thinking?: string,
 ): Promise<{ model: Model<Api> | undefined; note?: string }> {
-	const session = ctx.model;
-	if (!model || !ctx.modelRegistry) return { model };
-	if (session && model.provider === session.provider && model.id === session.id) return { model };
-	const error = await probeModel(ctx, model, signal, thinking);
-	if (!error) return { model };
-	if (model.provider === "opencode-go" && /MissingSessionID|x-opencode-session/i.test(error)) {
-		// ponytail: opencode-go rejects stateless probes but accepts AgentSession requests, which add the session header.
-		// Upgrade path: remove this exception when modelRegistry.complete can carry AgentSession request transforms.
-		return { model, note: `preflight unavailable (${error}); child session will validate the model` };
-	}
-	if (!session) throw new Error(`Model ${model.provider}/${model.id} is unusable: ${error}`);
-	return {
-		model: session,
-		note: `${model.provider}/${model.id} failed preflight (${error}); using session model ${session.provider}/${session.id}`,
-	};
+	return Effect.runPromise(ensureUsableModelEffect(ctx, model, signal, thinking));
 }
 
-async function createChildModelRuntime(ctx: ExtensionContext) {
+const createChildModelRuntime = Effect.fnUntraced(function* (ctx: ExtensionContext) {
 	const ids = ctx.modelRegistry.getRegisteredProviderIds?.() ?? [];
 	if (ids.length === 0) return undefined;
 	const agentDir = getAgentDir();
-	const runtime = await ModelRuntime.create({
-		authPath: join(agentDir, "auth.json"),
-		modelsPath: join(agentDir, "models.json"),
+	const runtime = yield* Effect.tryPromise({
+		try: () => ModelRuntime.create({
+			authPath: join(agentDir, "auth.json"),
+			modelsPath: join(agentDir, "models.json"),
+		}),
+		catch: (error) => error instanceof Error ? error : new Error(String(error)),
 	});
 	for (const id of ids) {
 		const native = ctx.modelRegistry.getRegisteredNativeProvider?.(id);
@@ -259,9 +270,12 @@ async function createChildModelRuntime(ctx: ExtensionContext) {
 		const config = ctx.modelRegistry.getRegisteredProviderConfig?.(id);
 		if (config) runtime.registerProvider(id, config);
 	}
-	await runtime.refresh({ allowNetwork: false });
+	yield* Effect.tryPromise({
+		try: () => runtime.refresh({ allowNetwork: false }),
+		catch: (error) => error instanceof Error ? error : new Error(String(error)),
+	});
 	return runtime;
-}
+});
 
 export function validateThinking(model: Model<Api> | undefined, level: string | undefined): void {
 	if (!level || level === "off") return;
@@ -314,7 +328,7 @@ export class SubagentManager {
 	private eventSeq = 0;
 	private persistSeq = 0;
 	private persistedSeq = 0;
-	private persistChain: Promise<unknown> = Promise.resolve();
+	private persistLock = Semaphore.makeUnsafe(1);
 	private readonly instanceNonce = Math.random().toString(36).slice(2, 8);
 	private cleared = false;
 
@@ -495,18 +509,20 @@ export class SubagentManager {
 			const tmp = `${sidecar}.${process.pid}.${this.instanceNonce}.${seq}.tmp`;
 			const payload = JSON.stringify(this.listRuns().slice(0, 50).map(cloneRun), null, 2);
 
-			this.persistChain = this.persistChain.then(async () => {
-				if (seq < this.persistedSeq) return;
-				try {
-					await writeFile(tmp, payload);
-					await rename(tmp, sidecar);
-					this.persistedSeq = seq;
-				} catch {
-					await rm(tmp, { force: true }).catch(() => {
-						/* ignore: the temp file may already be gone */
-					});
-				}
-			});
+			const manager = this;
+			const persistence = this.persistLock.withPermits(1)(Effect.gen(function* () {
+				if (seq < manager.persistedSeq) return;
+				const result = yield* Effect.result(Effect.tryPromise({
+					try: async () => {
+						await writeFile(tmp, payload);
+						await rename(tmp, sidecar);
+					},
+					catch: (error) => error,
+				}));
+				if (result._tag === "Success") manager.persistedSeq = seq;
+				else yield* Effect.tryPromise({ try: () => rm(tmp, { force: true }), catch: () => undefined }).pipe(Effect.ignore);
+			}));
+			Effect.runFork(persistence.pipe(Effect.ignore));
 		} catch {
 			/* ignore: persistence is best-effort, never fatal */
 		}
@@ -668,25 +684,26 @@ export class SubagentManager {
 	}
 
 	private makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): ChildHandlers {
+		const manager = this;
 		return {
-			onAskParent: async (_taskId, question, urgent) => {
+			onAskParent: async (taskId, question, urgent) => Effect.runPromise(Effect.gen(function* () {
 				if (!isLive(task.status)) {
 					return "(your task has already ended — stop work and return immediately)";
 				}
-				this.updateTask(run, task, { status: "awaiting_parent", pendingQuestion: question }, ctx);
+				manager.updateTask(run, task, { status: "awaiting_parent", pendingQuestion: question }, ctx);
 
-				if (!this.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
-					this.notifyParent(run, "asked", { taskId: task.id, agent: task.agent, question, urgent });
+				if (!manager.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
+					manager.notifyParent(run, "asked", { taskId: task.id, agent: task.agent, question, urgent });
 				}
 
-				const reply = await this.awaitParentReply(run.id, task.id, PARENT_REPLY_TIMEOUT_MS);
+				const reply = yield* manager.awaitParentReply(run.id, taskId, PARENT_REPLY_TIMEOUT_MS);
 
 				if (!isLive(task.status)) {
 					return "(your task was canceled while you waited — stop work and return immediately)";
 				}
-				this.updateTask(run, task, { status: "running", pendingQuestion: undefined }, ctx);
+				manager.updateTask(run, task, { status: "running", pendingQuestion: undefined }, ctx);
 				return reply;
-			},
+			})),
 			onNotifyParent: (_taskId, message, level) => {
 				this.emit("subagent:intercom", { runId: run.id, taskId: task.id, kind: "notify", level, message });
 				task.notifiedParent = true;
@@ -721,27 +738,24 @@ export class SubagentManager {
 			onPollMailbox: (taskId) => this.mailboxes.poll(`${run.id}:${taskId}`),
 		};
 	}
-	private awaitParentReply(runId: string, taskId: string, timeoutMs = 0): Promise<string> {
+	private awaitParentReply(runId: string, taskId: string, timeoutMs = 0): Effect.Effect<string> {
 		const key = `${runId}:${taskId}`;
-		return new Promise<string>((resolve) => {
-			const entry: PendingReply = {
-				resolve: (message) => {
-					if (timer) clearTimeout(timer);
-					if (this.pendingReplies.get(key) === entry) this.pendingReplies.delete(key);
-					resolve(message);
-				},
-			};
-			const timer =
-				timeoutMs > 0
-					? setTimeout(
-							() =>
-								entry.resolve(
-									"The parent did not answer in time. Proceed autonomously with your best judgment and state the assumption you made in your final answer.",
-								),
-							timeoutMs,
-						)
-					: undefined;
-			this.pendingReplies.set(key, entry);
+		const reply = Deferred.makeUnsafe<string>();
+		const entry: PendingReply = {
+			resolve: (message) => {
+				if (this.pendingReplies.get(key) === entry) this.pendingReplies.delete(key);
+				Effect.runFork(Deferred.succeed(reply, message));
+			},
+		};
+		this.pendingReplies.set(key, entry);
+		void Effect.runPromise(Effect.sleep(0).pipe(Effect.andThen(Deferred.await(reply))));
+		const waiting = Deferred.await(reply);
+		if (timeoutMs <= 0) return waiting;
+		return Effect.timeoutOrElse(waiting, {
+			duration: timeoutMs,
+			orElse: () => Effect.succeed(
+				"The parent did not answer in time. Proceed autonomously with your best judgment and state the assumption you made in your final answer.",
+			),
 		});
 	}
 	deliverReply(runId: string, taskId: string, message: string): boolean {
@@ -958,7 +972,7 @@ export class SubagentManager {
 				cwd: childCwd,
 				agentDir: getAgentDir(),
 				noExtensions: true,
-				extensionFactories: await codemodeFactories(),
+				extensionFactories: await Effect.runPromise(codemodeFactories()),
 				appendSystemPromptOverride: (base) => [
 					...base,
 					[prompt?.trim(), subagentInstruction].filter(Boolean).join("\n\n"),
@@ -971,7 +985,7 @@ export class SubagentManager {
 			const created = await createAgentSession({
 				cwd: childCwd,
 				agentDir: getAgentDir(),
-				modelRuntime: await createChildModelRuntime(ctx),
+				modelRuntime: await Effect.runPromise(createChildModelRuntime(ctx)),
 				resourceLoader: loader,
 				sessionManager: resume
 					? SessionManager.open(resume.sessionFile, undefined, childCwd)
@@ -1308,12 +1322,13 @@ export class SubagentManager {
 
 		const inputById = new Map(run.tasks.map((t, i) => [t.id, inputs[i]]));
 
-		const { skipped } = await runWaveScheduler(
+		const { skipped } = await Effect.runPromise(runWaveSchedulerEffect(
 			run.tasks.filter((t) => isLive(t.status)),
 			run.mode === "single" ? 1 : run.concurrency,
 			outputs,
 			settled,
-			async (task, _index, schedulerSignal) => {
+			(task, _index, schedulerSignal) => Effect.tryPromise({
+			try: async () => {
 				const taskSignal = signal ? AbortSignal.any([signal, schedulerSignal]) : schedulerSignal;
 				const input = inputById.get(task.id);
 				if (!input) {
@@ -1340,8 +1355,10 @@ export class SubagentManager {
 					this.notifyTask(run, task, task.status as "completed" | "failed" | "aborted");
 				}
 			},
+			catch: (error) => error,
+		}),
 			signal,
-		);
+		));
 
 		for (const s of skipped) {
 			const task = run.tasks.find((t) => t.id === s.id);

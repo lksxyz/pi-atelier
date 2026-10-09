@@ -64,34 +64,6 @@ export function applyUpstream(task: string, needs: string[], outputs: Map<string
 	return `${blocks.join("\n\n")}\n\n---\n\n${body}`;
 }
 
-async function mapWithConcurrency<T>(
-	items: T[],
-	concurrency: number,
-	fn: (item: T, index: number, signal: AbortSignal) => Promise<void>,
-	signal?: AbortSignal,
-): Promise<void> {
-	const results = await Effect.runPromise(
-		Effect.forEach(
-			items,
-			(item, index) =>
-				Effect.exit(
-					Effect.tryPromise({
-						try: (effectSignal) => fn(item, index, signal ? AbortSignal.any([signal, effectSignal]) : effectSignal),
-						catch: (error) => error,
-					}),
-				),
-			{ concurrency: Math.max(1, Math.min(concurrency, items.length)) },
-		),
-		signal ? { signal } : undefined,
-	);
-	const failure = results.find(Exit.isFailure);
-	if (failure && Exit.isFailure(failure)) {
-		const error = Cause.findErrorOption(failure.cause);
-		if (Option.isSome(error)) throw error.value;
-		throw failure.cause;
-	}
-}
-
 export interface SchedulerTask {
 	id: string;
 	needs?: string[];
@@ -102,7 +74,67 @@ export interface SkippedTask {
 	needs: string[];
 }
 
-export async function runWaveScheduler<T extends SchedulerTask>(
+const runConcurrent = <T>(
+	items: T[],
+	concurrency: number,
+	fn: (item: T, index: number, signal: AbortSignal) => Effect.Effect<void, unknown>,
+	externalSignal?: AbortSignal,
+): Effect.Effect<void, unknown> =>
+	Effect.gen(function* () {
+		if (externalSignal?.aborted) return yield* Effect.interrupt;
+		const results = yield* Effect.forEach(
+			items,
+			(item, index) =>
+				Effect.tryPromise({
+					try: (fiberSignal) => fn(item, index, externalSignal ? AbortSignal.any([externalSignal, fiberSignal]) : fiberSignal),
+					catch: (error) => error,
+				}).pipe(Effect.exit),
+			{ concurrency: Math.max(1, Math.min(concurrency, items.length)) },
+		);
+		const failure = results.find(Exit.isFailure);
+		if (failure && Exit.isFailure(failure)) {
+			const error = Cause.findErrorOption(failure.cause);
+			if (Option.isSome(error)) return yield* Effect.fail(error.value);
+			return yield* Effect.failCause(failure.cause);
+		}
+	});
+
+export const runWaveSchedulerEffect = <T extends SchedulerTask>(
+	tasks: T[],
+	concurrency: number,
+	outputs: Map<string, string>,
+	settled: Set<string>,
+	run: (task: T, index: number, signal: AbortSignal) => Effect.Effect<void, unknown>,
+	signal?: AbortSignal,
+): Effect.Effect<{ skipped: SkippedTask[] }, unknown> =>
+	Effect.gen(function* () {
+		let remaining = [...tasks];
+		const skipped: SkippedTask[] = [];
+		while (remaining.length > 0) {
+			const ready = remaining.filter((t) => (t.needs ?? []).every((need) => settled.has(need)));
+			if (ready.length === 0) break;
+			yield* runConcurrent(
+				ready,
+				concurrency,
+				(task, _index, workerSignal) => {
+					const index = tasks.indexOf(task);
+					const needs = task.needs ?? [];
+					const broken = needs.filter((need) => !outputs.has(need));
+					if (broken.length > 0) {
+						skipped.push({ id: task.id, needs: broken });
+						return Effect.void;
+					}
+					return run(task, index, workerSignal);
+				},
+				signal,
+			);
+			for (const task of ready) settled.add(task.id);
+			remaining = remaining.filter((t) => !settled.has(t.id));
+		}
+		return { skipped };
+	});
+
+export function runWaveScheduler<T extends SchedulerTask>(
 	tasks: T[],
 	concurrency: number,
 	outputs: Map<string, string>,
@@ -110,27 +142,15 @@ export async function runWaveScheduler<T extends SchedulerTask>(
 	run: (task: T, index: number, signal: AbortSignal) => Promise<void>,
 	signal?: AbortSignal,
 ): Promise<{ skipped: SkippedTask[] }> {
-	let remaining = [...tasks];
-	const skipped: SkippedTask[] = [];
-	while (remaining.length > 0) {
-		const ready = remaining.filter((t) => (t.needs ?? []).every((need) => settled.has(need)));
-
-		if (ready.length === 0) break;
-		await mapWithConcurrency(
-			ready,
-			concurrency,
-			async (task, _index, signal) => {
-				const index = tasks.indexOf(task);
-				const needs = task.needs ?? [];
-
-				const broken = needs.filter((need) => !outputs.has(need));
-				if (broken.length > 0) skipped.push({ id: task.id, needs: broken });
-				else await run(task, index, signal);
-			},
-			signal,
-		);
-		for (const task of ready) settled.add(task.id);
-		remaining = remaining.filter((t) => !settled.has(t.id));
-	}
-	return { skipped };
+	return Effect.runPromise(runWaveSchedulerEffect(
+		tasks,
+		concurrency,
+		outputs,
+		settled,
+		(task, index, workerSignal) => Effect.tryPromise({
+			try: () => run(task, index, workerSignal),
+			catch: (error) => error,
+		}),
+		signal,
+	));
 }

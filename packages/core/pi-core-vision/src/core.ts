@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
+import { Cause, Effect, Exit, Option } from "effect";
 
 export const MIME: Record<string, string> = {
   ".png": "image/png",
@@ -107,29 +108,22 @@ export function modelSupportsImages(model?: { input?: string[] }): boolean {
  * Retry backoff that rejects immediately when `signal` aborts. The abort listener
  * is removed in `finally`, so it never leaks after the wait completes or aborts.
  */
-async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (!signal) {
-    await new Promise((r) => setTimeout(r, ms));
-    return;
-  }
-  let onAbort: (() => void) | undefined;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      if (signal.aborted) {
-        reject(new Error("pi-vision: aborted during retry"));
-        return;
-      }
-      const t = setTimeout(resolve, ms);
-      onAbort = () => {
-        clearTimeout(t);
-        reject(new Error("pi-vision: aborted during retry"));
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
+const sleep = (ms: number, signal?: AbortSignal): Effect.Effect<void, Error> => {
+  if (!signal) return Effect.sleep(ms);
+  return Effect.callback<void, Error>((resume) => {
+    if (signal.aborted) return resume(Effect.fail(new Error("pi-vision: aborted during retry")));
+    const timer = setTimeout(() => resume(Effect.void), ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resume(Effect.fail(new Error("pi-vision: aborted during retry")));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    return Effect.sync(() => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
     });
-  } finally {
-    if (onAbort) signal.removeEventListener("abort", onAbort);
-  }
-}
+  });
+};
 
 /**
  * Send already-encoded base64 image to the vision API.
@@ -137,34 +131,36 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * `model` may be a comma-separated chain (try in order). Transient errors (408/429/5xx)
  * get one retry; per-model failures fall through to the next model.
  */
-export async function describeBase64(
+const asError = (cause: unknown): Error => cause instanceof Error ? cause : new Error(String(cause));
+const promise = <A>(try_: (signal: AbortSignal) => PromiseLike<A>) =>
+  Effect.tryPromise({ try: try_, catch: asError });
+
+export const describeBase64 = Effect.fnUntraced(function* (
   data: string,
   mimeType: string,
   cfg: VisionConfig,
   signal?: AbortSignal,
   extraHeaders?: Record<string, string>,
-): Promise<{ text: string; usage?: { input: number; output: number } }> {
+): Effect.fn.Return<{ text: string; usage?: { input: number; output: number } }, Error> {
   const models = cfg.model.split(",").map((m) => m.trim()).filter(Boolean);
-  if (models.length === 0) throw new Error("pi-vision: no model configured");
+  if (models.length === 0) return yield* Effect.fail(new Error("pi-vision: no model configured"));
   let lastErr: Error | null = null;
   for (const model of models) {
-    try {
-      return await describeOnce(data, mimeType, { ...cfg, model }, signal, extraHeaders);
-    } catch (e) {
-      lastErr = e as Error;
-    }
+    const exit = yield* Effect.exit(describeOnce(data, mimeType, { ...cfg, model }, signal, extraHeaders));
+    if (Exit.isSuccess(exit)) return exit.value;
+    const error = Cause.findErrorOption(exit.cause);
+    lastErr = Option.isSome(error) ? asError(error.value) : asError(Cause.squash(exit.cause));
   }
-  throw lastErr ?? new Error("pi-vision: vision call failed");
-}
+  return yield* Effect.fail(lastErr ?? new Error("pi-vision: vision call failed"));
+});
 
-async function describeOnce(
+const describeOnce = Effect.fnUntraced(function* (
   data: string,
   mimeType: string,
   cfg: VisionConfig,
   signal?: AbortSignal,
   extraHeaders?: Record<string, string>,
-): Promise<{ text: string; usage?: { input: number; output: number } }> {
-  // Cache hit → instant, zero tokens.
+): Effect.fn.Return<{ text: string; usage?: { input: number; output: number } }, Error> {
   const key = cacheKey(data, cfg);
   const cached = cacheGet(key);
   if (cached !== undefined) return { text: cached };
@@ -172,20 +168,15 @@ async function describeOnce(
   const body = JSON.stringify({
     model: cfg.model,
     max_tokens: cfg.maxTokens,
-    stream: false, // some gateways (kitchen) stream SSE by default — force JSON
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: cfg.prompt },
-          { type: "image_url", image_url: { url: `data:${mimeType};base64,${data}` } },
-        ],
-      },
-    ],
+    stream: false,
+    messages: [{ role: "user", content: [
+      { type: "text", text: cfg.prompt },
+      { type: "image_url", image_url: { url: `data:${mimeType};base64,${data}` } },
+    ] }],
   });
-  const attempt = async (): Promise<Response> => {
+  const attempt = promise((effectSignal) => {
     const timeoutSignal = AbortSignal.timeout(60_000);
-    const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+    const combined = AbortSignal.any([effectSignal, ...(signal ? [signal] : []), timeoutSignal]);
     return fetch(`${cfg.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
       signal: combined,
@@ -196,33 +187,26 @@ async function describeOnce(
       },
       body,
     });
-  };
+  });
 
-  let res = await attempt();
-  // One retry on transient failures (408/429/5xx); skip for auth/config (401/403)
-  // and definitive client errors (4xx) — retrying those never succeeds. For 429,
-  // honor Retry-After / "reset after Xs" hints (rate-limited providers like Cerebras
-  // at 5 req/min) — capped at 30s so the agent never stalls long on one read.
+  let res = yield* attempt;
   if (!res.ok && (res.status === 408 || res.status === 429 || res.status >= 500)) {
-    const bodyText = await res.text().catch(() => "");
+    const bodyText = yield* promise(() => res.text()).pipe(Effect.catch(() => Effect.succeed("")));
     const waitMs = res.status === 429 ? retryAfterMs(res.headers.get("retry-after"), bodyText) : 1500;
-    await sleep(waitMs, signal);
-    res = await attempt();
+    yield* sleep(waitMs, signal);
+    res = yield* attempt;
   }
   if (!res.ok) {
-    const text = (await res.text().catch(() => ""))
-      .replace(/Bearer\s+\S+/gi, "Bearer ***")
-      .replace(/(authorization\s*[:=]\s*)[^\s,;]+/gi, "$1***");
-    throw new Error(`pi-vision: vision API ${res.status}${cfg.model !== "" ? ` (${cfg.model})` : ""}: ${text.slice(0, 300)}`);
+    const responseText = yield* promise(() => res.text()).pipe(Effect.catch(() => Effect.succeed("")));
+    const redacted = responseText.replace(/Bearer\\s+\\S+/gi, "Bearer ***").replace(/(authorization\\s*[:=]\\s*)[^\\s,;]+/gi, "$1***");
+    return yield* Effect.fail(new Error(`pi-vision: vision API ${res.status}${cfg.model !== "" ? ` (${cfg.model})` : ""}: ${redacted.slice(0, 300)}`));
   }
-  const dataJson = (await res.json()) as {
+  const dataJson = yield* promise(() => res.json() as Promise<{
     choices?: { message?: { content?: unknown } }[];
     usage?: { prompt_tokens?: number; completion_tokens?: number };
-  };
+  }>);
   const text = dataJson?.choices?.[0]?.message?.content;
-  if (typeof text !== "string" || !text.trim()) {
-    throw new Error("pi-vision: unexpected or empty API response");
-  }
+  if (typeof text !== "string" || !text.trim()) return yield* Effect.fail(new Error("pi-vision: unexpected or empty API response"));
   cacheSet(key, text);
   return {
     text,
@@ -233,44 +217,40 @@ async function describeOnce(
           cacheRead: 0,
           cacheWrite: 0,
           totalTokens: (dataJson.usage.prompt_tokens ?? 0) + (dataJson.usage.completion_tokens ?? 0),
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, // gateway pricing unknown
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         }
       : undefined,
   };
-}
+});
 
 /**
  * Raw fallback (no pi resize): read an image file and base64-encode it,
  * guarding file size. Used when pi's image processing failed.
  */
-export async function readRawImage(path: string): Promise<{ data: string; mimeType: string }> {
+export const readRawImage = Effect.fnUntraced(function* (
+  path: string,
+): Effect.fn.Return<{ data: string; mimeType: string }, Error> {
   const mimeType = MIME[extname(path).toLowerCase()];
-  if (!mimeType) throw new Error(`pi-vision: unsupported image type "${extname(path)}"`);
-  // Stat first: bail on oversized files before reading them into memory.
-  const info = await stat(path).catch(() => null);
+  if (!mimeType) return yield* Effect.fail(new Error(`pi-vision: unsupported image type "${extname(path)}"`));
+  const info = yield* promise(() => stat(path)).pipe(Effect.catch(() => Effect.succeed(null)));
   if (info && info.size > MAX_IMAGE_BYTES) {
-    throw new Error(
-      `pi-vision: image too large (${(info.size / 1048576).toFixed(1)}MB > 20MB). Downscale it first.`,
-    );
+    return yield* Effect.fail(new Error(`pi-vision: image too large (${(info.size / 1048576).toFixed(1)}MB > 20MB). Downscale it first.`));
   }
-  const bytes = await readFile(path);
+  const bytes = yield* promise(() => readFile(path));
   if (bytes.byteLength > MAX_IMAGE_BYTES) {
-    throw new Error(
-      `pi-vision: image too large (${(bytes.byteLength / 1048576).toFixed(1)}MB > 20MB). Downscale it first.`,
-    );
+    return yield* Effect.fail(new Error(`pi-vision: image too large (${(bytes.byteLength / 1048576).toFixed(1)}MB > 20MB). Downscale it first.`));
   }
   return { data: Buffer.from(bytes).toString("base64"), mimeType };
-}
+});
 
-/** Raw fallback (no pi resize): read file, guard size, describe. Used when pi's image processing failed. */
-export async function describeRawFile(
+export const describeRawFile = Effect.fnUntraced(function* (
   path: string,
   cfg: VisionConfig,
   signal?: AbortSignal,
-): Promise<{ text: string; usage?: { input: number; output: number } }> {
-  const { data, mimeType } = await readRawImage(path);
-  return describeBase64(data, mimeType, cfg, signal);
-}
+): Effect.fn.Return<{ text: string; usage?: { input: number; output: number } }, Error> {
+  const { data, mimeType } = yield* readRawImage(path);
+  return yield* describeBase64(data, mimeType, cfg, signal);
+});
 
 export function maskKey(key: string): string {
   if (!key) return "(not set)";
