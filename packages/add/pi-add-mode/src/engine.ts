@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import type { Model } from "@earendil-works/pi-ai";
 import type {
 	BeforeAgentStartEvent,
@@ -79,42 +80,57 @@ export class ModeEngine {
 	}
 
 	/** Apply a mode, or the built-in default when `name` is undefined. */
-	async activate(name: string | undefined, ctx: ExtensionContext): Promise<ActivateResult> {
-		const wantsMode = Boolean(name) && name !== DEFAULT_MODE_NAME;
-		const target = wantsMode ? this.store?.get(name as string) : undefined;
-		if (wantsMode && !target) return { ok: false, message: `Unknown mode "${name}"` };
+	activate(name: string | undefined, ctx: ExtensionContext): Effect.Effect<ActivateResult, unknown> {
+		return Effect.gen({ self: this }, function* () {
+			const wantsMode = Boolean(name) && name !== DEFAULT_MODE_NAME;
+			const target = wantsMode ? this.store?.get(name as string) : undefined;
+			if (wantsMode && !target) return { ok: false, message: `Unknown mode "${name}"` };
 
-		if (!this.snapshot) {
-			this.snapshot = { model: ctx.model, thinking: this.pi.getThinkingLevel(), tools: this.pi.getActiveTools() };
-		}
-
-		if (!target) {
-			await this.restoreSnapshot();
-			this.current = undefined;
-			this.applyVisuals(ctx);
-			return { ok: true };
-		}
-
-		const notes: string[] = [];
-		if (target.model) {
-			const ref = splitModelRef(target.model);
-			const model = ref ? ctx.modelRegistry.find(ref[0], ref[1]) : undefined;
-			if (!model) {
-				notes.push(`model ${target.model} not found`);
-			} else if (!(await this.pi.setModel(model))) {
-				notes.push(`no credentials for ${target.model}`);
+			if (!this.snapshot) {
+				this.snapshot = {
+					model: ctx.model,
+					thinking: this.pi.getThinkingLevel(),
+					tools: this.pi.getActiveTools(),
+				};
 			}
-		} else if (this.snapshot.model) {
-			await this.pi.setModel(this.snapshot.model);
-		}
 
-		const known = this.pi.getAllTools().map((tool) => tool.name);
-		this.pi.setActiveTools(resolveToolNames(target.tools, this.snapshot.tools, known));
-		this.pi.setThinkingLevel(target.thinking ?? this.snapshot.thinking);
+			if (!target) {
+				yield* this.restoreSnapshot();
+				this.current = undefined;
+				this.applyVisuals(ctx);
+				return { ok: true };
+			}
 
-		this.current = target;
-		this.applyVisuals(ctx);
-		return notes.length > 0 ? { ok: true, message: notes.join("; ") } : { ok: true };
+			const notes: string[] = [];
+			if (target.model) {
+				const ref = splitModelRef(target.model);
+				const model = ref ? ctx.modelRegistry.find(ref[0], ref[1]) : undefined;
+				if (!model) {
+					notes.push(`model ${target.model} not found`);
+				} else if (
+					!(yield* Effect.tryPromise({
+						try: () => this.pi.setModel(model),
+						catch: (error) => error,
+					}))
+				) {
+					notes.push(`no credentials for ${target.model}`);
+				}
+			} else if (this.snapshot.model) {
+				const model = this.snapshot.model;
+				yield* Effect.tryPromise({
+					try: () => this.pi.setModel(model),
+					catch: (error) => error,
+				});
+			}
+
+			const known = this.pi.getAllTools().map((tool) => tool.name);
+			this.pi.setActiveTools(resolveToolNames(target.tools, this.snapshot.tools, known));
+			this.pi.setThinkingLevel(target.thinking ?? this.snapshot.thinking);
+
+			this.current = target;
+			this.applyVisuals(ctx);
+			return notes.length > 0 ? { ok: true, message: notes.join("; ") } : { ok: true };
+		});
 	}
 
 	/** Drop the mode and the pre-mode snapshot without touching model or tools. */
@@ -125,20 +141,26 @@ export class ModeEngine {
 	}
 
 	/** Re-apply the current mode after its definition changed (no snapshot reset). */
-	async reapply(ctx: ExtensionContext): Promise<void> {
-		await this.activate(this.activeName, ctx);
+	reapply(ctx: ExtensionContext): Effect.Effect<void, unknown> {
+		return Effect.asVoid(this.activate(this.activeName, ctx));
 	}
 
-	async switchTo(name: string | undefined, ctx: ExtensionContext, options?: { persist?: boolean }): Promise<boolean> {
-		const result = await this.activate(name, ctx);
-		if (!result.ok) {
-			ctx.ui.notify(result.message ?? "Mode switch failed", "error");
-			return false;
-		}
-		if (options?.persist !== false) this.persistState();
-		const label = this.activeName ? `Mode "${this.activeName}" active` : "Default mode active";
-		ctx.ui.notify(result.message ? `${label} (${result.message})` : label, result.message ? "warning" : "info");
-		return true;
+	switchTo(
+		name: string | undefined,
+		ctx: ExtensionContext,
+		options?: { persist?: boolean },
+	): Effect.Effect<boolean, unknown> {
+		return Effect.gen({ self: this }, function* () {
+			const result = yield* this.activate(name, ctx);
+			if (!result.ok) {
+				ctx.ui.notify(result.message ?? "Mode switch failed", "error");
+				return false;
+			}
+			if (options?.persist !== false) this.persistState();
+			const label = this.activeName ? `Mode "${this.activeName}" active` : "Default mode active";
+			ctx.ui.notify(result.message ? `${label} (${result.message})` : label, result.message ? "warning" : "info");
+			return true;
+		});
 	}
 
 	persistState(): void {
@@ -149,7 +171,10 @@ export class ModeEngine {
 					tools: this.snapshot.tools,
 				}
 			: undefined;
-		this.pi.appendEntry(STATE_ENTRY_TYPE, { name: this.activeName ?? null, snapshot } satisfies PersistedState);
+		this.pi.appendEntry(STATE_ENTRY_TYPE, {
+			name: this.activeName ?? null,
+			snapshot,
+		} satisfies PersistedState);
 	}
 
 	/** Rebuild the pre-mode snapshot from a persisted session entry after reload. */
@@ -188,11 +213,19 @@ export class ModeEngine {
 		if (mode.subagentThinking) applySubagentThinking(input, mode.subagentThinking);
 	}
 
-	private async restoreSnapshot(): Promise<void> {
-		if (!this.snapshot) return;
-		if (this.snapshot.model) await this.pi.setModel(this.snapshot.model);
-		this.pi.setThinkingLevel(this.snapshot.thinking);
-		this.pi.setActiveTools(this.snapshot.tools);
+	private restoreSnapshot(): Effect.Effect<void, unknown> {
+		return Effect.gen({ self: this }, function* () {
+			if (!this.snapshot) return;
+			if (this.snapshot.model) {
+				const model = this.snapshot.model;
+				yield* Effect.tryPromise({
+					try: () => this.pi.setModel(model),
+					catch: (error) => error,
+				});
+			}
+			this.pi.setThinkingLevel(this.snapshot.thinking);
+			this.pi.setActiveTools(this.snapshot.tools);
+		});
 	}
 
 	private applyVisuals(ctx: ExtensionContext): void {
@@ -208,7 +241,11 @@ export class ModeEngine {
 			return;
 		}
 		ctx.ui.setWorkingIndicator(
-			mode.color ? { frames: SPINNER_FRAMES.map((frame) => colorize(frame, mode.color, theme)) } : undefined,
+			mode.color
+				? {
+						frames: SPINNER_FRAMES.map((frame) => colorize(frame, mode.color, theme)),
+					}
+				: undefined,
 		);
 		this.setStandby(ctx, colorize(formatStandby(mode.name), mode.color, theme));
 		this.setBorder(ctx, mode.color);
@@ -231,7 +268,9 @@ export class ModeEngine {
 			attached.tui.requestRender();
 			return;
 		}
-		ctx.ui.setWidget(WIDGET_KEY, text ? [text] : undefined, { placement: "aboveEditor" });
+		ctx.ui.setWidget(WIDGET_KEY, text ? [text] : undefined, {
+			placement: "aboveEditor",
+		});
 	}
 
 	/** Detach when pi no longer has any extension editor (another extension cleared or replaced it). */
