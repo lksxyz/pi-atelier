@@ -5,14 +5,15 @@
  * restarts, does not replay history across forks.
  */
 
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { Effect } from "effect";
 import { type TaskState, EMPTY_STATE } from "./types.ts";
 
 const sessions = new Map<string, TaskState>();
 let activeRenderSession = "";
-let persistTimer: ReturnType<typeof setTimeout> | undefined;
+let persistScheduled = false;
 
 export function sid(ctx: { sessionManager?: { getSessionId?(): string } }): string {
 	try {
@@ -30,53 +31,55 @@ function stateFile(): string {
 	return path.join(getAgentDir(), "pi-todo-state.json");
 }
 
-function loadFromDisk(): void {
-	try {
-		const raw = JSON.parse(fs.readFileSync(stateFile(), "utf-8")) as Record<string, TaskState>;
-		for (const [k, v] of Object.entries(raw)) {
-			if (!k) continue; // never restore the anonymous "" slot from an older sidecar
-			if (!v || !Array.isArray(v.tasks) || typeof v.nextId !== "number") continue;
-			if (sessions.has(k)) continue; // L4: never clobber a live in-memory session
-			const maxId = v.tasks.reduce((m, t) => Math.max(m, t.id ?? 0), 0);
-			if (v.nextId <= maxId) v.nextId = maxId + 1; // never reuse ids
-			sessions.set(k, v);
-		}
-	} catch {
-		/* first run or corrupt file — start empty */
+const loadFromDisk = Effect.fnUntraced(function* (): Effect.fn.Return<void> {
+	const raw = yield* Effect.tryPromise({
+		try: () => fs.readFile(stateFile(), "utf-8").then((text) => JSON.parse(text) as Record<string, TaskState>),
+		catch: () => undefined,
+	}).pipe(Effect.catch(() => Effect.void));
+	if (!raw) return;
+	for (const [k, v] of Object.entries(raw)) {
+		if (!k) continue;
+		if (!v || !Array.isArray(v.tasks) || typeof v.nextId !== "number") continue;
+		if (sessions.has(k)) continue;
+		const maxId = v.tasks.reduce((m, t) => Math.max(m, t.id ?? 0), 0);
+		if (v.nextId <= maxId) v.nextId = maxId + 1;
+		sessions.set(k, v);
 	}
-}
+});
 
-/** Atomic write: tmp + rename so a crash mid-write can't corrupt the sidecar. */
-function writeDisk(): void {
-	try {
-		const dir = path.dirname(stateFile());
-		fs.mkdirSync(dir, { recursive: true });
-		const tmp = `${stateFile()}.tmp`;
-		// The anonymous "" slot (no sessionManager) is ephemeral — never persisted as a key.
-		fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries([...sessions].filter(([k]) => k !== ""))));
-		fs.renameSync(tmp, stateFile());
-	} catch {
-		/* persistence is best-effort */
-	}
-}
+const writeDisk = Effect.fnUntraced(function* (): Effect.fn.Return<void> {
+	const file = stateFile();
+	const tmp = `${file}.tmp`;
+	yield* Effect.tryPromise({
+		try: async () => {
+			await fs.mkdir(path.dirname(file), { recursive: true });
+			await fs.writeFile(tmp, JSON.stringify(Object.fromEntries([...sessions].filter(([k]) => k !== ""))));
+			await fs.rename(tmp, file);
+		},
+		catch: () => undefined,
+	}).pipe(Effect.catch(() => Effect.void));
+});
 
 /** Debounced write of the whole map. Called on every commit; cheap at this cadence. */
-export function schedulePersist(): void {
-	if (persistTimer) return;
-	persistTimer = setTimeout(() => {
-		persistTimer = undefined;
-		writeDisk();
-	}, 500);
-}
+export const schedulePersist = Effect.fnUntraced(function* (): Effect.fn.Return<void> {
+	if (persistScheduled) return;
+	persistScheduled = true;
+	yield* Effect.forkDetach(
+		Effect.sleep("500 millis").pipe(
+			Effect.andThen(writeDisk()),
+			Effect.ensuring(Effect.sync(() => { persistScheduled = false; })),
+		),
+	);
+});
 
 export function getState(sessionId: string): TaskState {
 	return sessions.get(sessionId) ?? freshState();
 }
 
-export function commitState(sessionId: string, state: TaskState): void {
+export const commitState = Effect.fnUntraced(function* (sessionId: string, state: TaskState): Effect.fn.Return<void> {
 	sessions.set(sessionId, state);
-	schedulePersist();
-}
+	yield* schedulePersist();
+});
 
 export function setActiveRenderSession(id: string): void {
 	activeRenderSession = id;
@@ -94,11 +97,10 @@ export function getRenderState(): TaskState {
 }
 
 /** Restore the given session's slot from disk. Returns true when restored. */
-export function restoreSession(sessionId: string): boolean {
-	if (!sessions.has(sessionId)) loadFromDisk(); // any missing session reloads from disk
-	if (!sessions.has(sessionId)) return false;
-	return true;
-}
+export const restoreSession = Effect.fnUntraced(function* (sessionId: string): Effect.fn.Return<boolean> {
+	if (!sessions.has(sessionId)) yield* loadFromDisk();
+	return sessions.has(sessionId);
+});
 
 /** Does the session have a live state slot? (widget reclaim check) */
 export function hasSession(sessionId: string): boolean {
