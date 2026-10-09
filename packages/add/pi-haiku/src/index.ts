@@ -12,6 +12,7 @@
  */
 
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { Effect } from "effect";
 import type { AssistantMessage, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
@@ -43,8 +44,7 @@ function formatCwd(cwd: string): string {
   const resolvedCwd = resolve(cwd);
   const resolvedHome = resolve(home);
   const rel = relative(resolvedHome, resolvedCwd);
-  const insideHome =
-    rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  const insideHome = rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 
   if (!insideHome) return cwd;
   return rel === "" ? "~" : `~${sep}${rel}`;
@@ -168,7 +168,7 @@ function renderBar(theme: Theme, pct: number, barWidth: number): string {
 function sanitizeStatus(text: string): string {
   return text
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, (sequence) => /^\x1b\[[0-9;:]*m$/.test(sequence) ? sequence : "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, (sequence) => (/^\x1b\[[0-9;:]*m$/.test(sequence) ? sequence : ""))
     .replace(/[\r\n\t]/g, " ")
     .replace(/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f-\x9f]|\x1b(?!\[[0-9;:]*m)/g, "")
     .replace(/ +/g, " ")
@@ -187,8 +187,7 @@ function renderHeader(theme: Theme, width: number): string[] {
   const contentWidth = Math.max(0, width - contentStart);
 
   // A keybinding pair: the key glows in accent, the verb sits quiet in dim.
-  const pair = (key: string, desc: string) =>
-    `${theme.fg("accent", key)} ${theme.fg("dim", desc)}`;
+  const pair = (key: string, desc: string) => `${theme.fg("accent", key)} ${theme.fg("dim", desc)}`;
   const sep = theme.fg("dim", " · ");
   const ellipsis = theme.fg("dim", "…");
 
@@ -244,11 +243,7 @@ function renderHeader(theme: Theme, width: number): string[] {
       pair("ctrl+l", "select"),
       pair("shift+tab", "thinking"),
     ]),
-    ...flowGroup("view", [
-      pair("ctrl+o", "tools"),
-      pair("ctrl+t", "thinking"),
-      pair("ctrl+g", "editor"),
-    ]),
+    ...flowGroup("view", [pair("ctrl+o", "tools"), pair("ctrl+t", "thinking"), pair("ctrl+g", "editor")]),
     ...flowGroup("input", [
       pair("/", "commands"),
       pair("!", "bash"),
@@ -262,10 +257,7 @@ function renderHeader(theme: Theme, width: number): string[] {
 
   // --- Hint ---
   lines.push("");
-  lines.push(
-    " ".repeat(INDENT) +
-      theme.fg("muted", "Pi can explain its own features and look up its docs."),
-  );
+  lines.push(" ".repeat(INDENT) + theme.fg("muted", "Pi can explain its own features and look up its docs."));
 
   return lines.map((line) => truncateToWidth(line, width, ellipsis));
 }
@@ -416,8 +408,7 @@ export default function (pi: ExtensionAPI) {
               totalCost += m.usage.cost.total;
 
               const promptTokens = m.usage.input + m.usage.cacheRead + m.usage.cacheWrite;
-              latestCacheHitRate =
-                promptTokens > 0 ? (m.usage.cacheRead / promptTokens) * 100 : undefined;
+              latestCacheHitRate = promptTokens > 0 ? (m.usage.cacheRead / promptTokens) * 100 : undefined;
             }
           }
 
@@ -547,22 +538,25 @@ export default function (pi: ExtensionAPI) {
   // Toggle command.
   pi.registerCommand("haiku", {
     description: "Toggle the Haiku header and footer",
-    handler: async (_args, ctx) => {
-      if (ctx.mode !== "tui") {
-        if (ctx.hasUI) ctx.ui.notify("Haiku requires terminal UI mode", "info");
-        return;
-      }
-      enabled = !enabled;
-      if (enabled) {
-        applyFooter(ctx);
-        applyHeader(ctx);
-        ctx.ui.notify("Haiku enabled", "info");
-      } else {
-        restoreFooter(ctx);
-        restoreHeader(ctx);
-        ctx.ui.notify("Default UI restored", "info");
-      }
-    },
+    handler: (_args, ctx) =>
+      Effect.runPromise(
+        Effect.sync(() => {
+          if (ctx.mode !== "tui") {
+            if (ctx.hasUI) ctx.ui.notify("Haiku requires terminal UI mode", "info");
+            return;
+          }
+          enabled = !enabled;
+          if (enabled) {
+            applyFooter(ctx);
+            applyHeader(ctx);
+            ctx.ui.notify("Haiku enabled", "info");
+          } else {
+            restoreFooter(ctx);
+            restoreHeader(ctx);
+            ctx.ui.notify("Default UI restored", "info");
+          }
+        }),
+      ),
   });
 
   pi.on("session_start", (event, ctx) => {

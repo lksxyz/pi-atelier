@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Effect } from "effect";
 
 const REPO_DIR = path.join(os.homedir(), ".pi", "repos");
 const MAX_ROOTS = 3;
@@ -117,54 +118,66 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("diagnostic", {
 		description: "show code-diagnostic config, run check now, or clear config",
 		getArgumentCompletions: (prefix) =>
-			["status", "run", "clear"]
-				.filter((s) => s.startsWith(prefix))
-				.map((s) => ({ value: s, label: s })),
-		handler: async (args, ctx) => {
-			const sub = args.trim().split(/\s+/)[0];
-			const found = findConfig(ctx.cwd);
-			if (sub === "clear") {
-				let removed = 0;
-				for (const root of repoRootsUp(ctx.cwd)) {
-					const p = configPath(root);
-					if (fs.existsSync(p)) {
-						fs.unlinkSync(p);
-						removed++;
+			["status", "run", "clear"].filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s })),
+		handler: (args, ctx) =>
+			Effect.runPromise(
+				Effect.gen(function* () {
+					const sub = args.trim().split(/\s+/)[0];
+					const found = findConfig(ctx.cwd);
+					if (sub === "clear") {
+						let removed = 0;
+						for (const root of repoRootsUp(ctx.cwd)) {
+							const p = configPath(root);
+							if (fs.existsSync(p)) {
+								fs.unlinkSync(p);
+								removed++;
+							}
+						}
+						loadFor(ctx.cwd);
+						ctx.ui.notify(
+							removed
+								? `code-diagnostic config cleared (${removed}) — discovery will re-run`
+								: "no config found to clear",
+							"info",
+						);
+						return;
 					}
-				}
-				loadFor(ctx.cwd);
-				ctx.ui.notify(removed ? `code-diagnostic config cleared (${removed}) — discovery will re-run` : "no config found to clear", "info");
-				return;
-			}
-			if (sub === "run") {
-				if (!found) {
-					ctx.ui.notify("no code-diagnostic config for this repo yet — run /diagnostic or wait for discovery", "info");
-					return;
-				}
-				if (!found.config.enabled) {
-					ctx.ui.notify("code-diagnostic disabled for this repo (enabled:false)", "info");
-					return;
-				}
-				const out = await runCheck(found.config, found.root);
-				ctx.ui.notify(out ? `check failed:\n${out.slice(0, 500)}` : "check passed", out ? "error" : "info");
-				return;
-			}
-			// default status
-			if (!found) {
-				ctx.ui.notify("no code-diagnostic config for this repo — discovery will propose one", "info");
-				return;
-			}
-			const c = found.config;
-			ctx.ui.notify(
-				`root: ${found.root}\n` +
-					`check: ${c.check}\n` +
-					`fileCheck: ${c.fileCheck ?? "—"}\n` +
-					`enabled: ${c.enabled}\n` +
-					`testedAt: ${c.testedAt ?? "—"}\n` +
-					`lastExit: ${c.lastExit ?? "—"}`,
-				c.enabled ? "info" : "warning",
-			);
-		},
+					if (sub === "run") {
+						if (!found) {
+							ctx.ui.notify(
+								"no code-diagnostic config for this repo yet — run /diagnostic or wait for discovery",
+								"info",
+							);
+							return;
+						}
+						if (!found.config.enabled) {
+							ctx.ui.notify("code-diagnostic disabled for this repo (enabled:false)", "info");
+							return;
+						}
+						const out = yield* runCheck(found.config, found.root);
+						ctx.ui.notify(
+							out ? `check failed:\n${out.slice(0, 500)}` : "check passed",
+							out ? "error" : "info",
+						);
+						return;
+					}
+					// default status
+					if (!found) {
+						ctx.ui.notify("no code-diagnostic config for this repo — discovery will propose one", "info");
+						return;
+					}
+					const c = found.config;
+					ctx.ui.notify(
+						`root: ${found.root}\n` +
+							`check: ${c.check}\n` +
+							`fileCheck: ${c.fileCheck ?? "—"}\n` +
+							`enabled: ${c.enabled}\n` +
+							`testedAt: ${c.testedAt ?? "—"}\n` +
+							`lastExit: ${c.lastExit ?? "—"}`,
+						c.enabled ? "info" : "warning",
+					);
+				}),
+			),
 	});
 
 	// per-repo-root state, re-resolved every session (config can change on disk)
@@ -192,10 +205,13 @@ export default function (pi: ExtensionAPI) {
 		current = findConfig(cwd);
 	}
 
-	async function runCheck(config: CheckConfig, root: string): Promise<string> {
+	const runCheck = Effect.fnUntraced(function* (config: CheckConfig, root: string) {
 		const [cmd, args] = splitCmd(config.check);
 		if (!cmd) return "";
-		const res = await pi.exec(cmd, args, { cwd: root, timeout: 120_000 }).catch(() => null);
+		const res = yield* Effect.tryPromise({
+			try: () => pi.exec(cmd, args, { cwd: root, timeout: 120_000 }),
+			catch: (cause) => cause,
+		}).pipe(Effect.catch(() => Effect.succeed(null)));
 		if (!res) return "";
 		if (res.killed) {
 			// silent 120s burn on every settle otherwise — surface it once so the config can be fixed
@@ -217,25 +233,33 @@ export default function (pi: ExtensionAPI) {
 		badRuns++;
 		if (badRuns >= BAD_RUNS_TO_DISABLE) {
 			config.enabled = false; // crashing/wrong command — stop, re-discover
-			fs.mkdirSync(REPO_DIR, { recursive: true });
-			fs.writeFileSync(configPath(root), JSON.stringify(config, null, 2));
+			yield* Effect.sync(() => {
+				fs.mkdirSync(REPO_DIR, { recursive: true });
+				fs.writeFileSync(configPath(root), JSON.stringify(config, null, 2));
+			});
 		}
 		return diagnostics || `exit ${res.code}`;
-	}
-
-	pi.on("session_start", async (_event, ctx) => {
-		loadFor(ctx.cwd);
 	});
+
+	pi.on("session_start", (_event, ctx) =>
+		Effect.runPromise(Effect.sync(() => loadFor(ctx.cwd))),
+	);
 
 	// agent_settled carries no messages — capture abort state from agent_end, which does.
-	pi.on("agent_end", async (event) => {
-		lastRunAborted = event.messages.some(
-			(m) => m.role === "assistant" && (m.stopReason === "aborted" || m.stopReason === "error"),
-		);
-	});
+	pi.on("agent_end", (event) =>
+		Effect.runPromise(
+			Effect.sync(() => {
+				lastRunAborted = event.messages.some(
+					(m) => m.role === "assistant" && (m.stopReason === "aborted" || m.stopReason === "error"),
+				);
+			}),
+		),
+	);
 
 	// Tier 1: per-file check on write/edit — silent, async, never blocks the agent.
-	pi.on("tool_result", async (event, ctx) => {
+	pi.on("tool_result", (event, ctx) =>
+		Effect.runPromise(
+			Effect.sync(() => {
 		// bash mutates files constantly (sed -i, mv, rm, git checkout, formatters, codegen),
 		// so it must mark the tree dirty even though there is no single file to lint.
 		if (event.toolName === "bash") {
@@ -251,75 +275,100 @@ export default function (pi: ExtensionAPI) {
 		const [cmd, args] = splitFileCmd(config.fileCheck, file);
 		if (!cmd) return;
 		const root = current?.root ?? ctx.cwd; // match runCheck: linters resolve config from the repo root
-		const run = pi
-			.exec(cmd, args, { cwd: root, timeout: 30_000 })
-			.then((res) => {
-				if (res.killed) return;
-				if (res.code === 0) {
-					fileErrors.delete(file); // fixed since the last edit — don't report the stale error
-					return;
-				}
-				fileErrors.set(file, (res.stdout + "\n" + res.stderr).trim());
-			})
-			.catch(() => {}) // fail-open: a broken fileCheck never blocks
-			.finally(() => inFlight.delete(run));
+		const check = Effect.tryPromise({
+			try: () => pi.exec(cmd, args, { cwd: root, timeout: 30_000 }),
+			catch: (cause) => cause,
+		}).pipe(
+			Effect.catch(() => Effect.succeed(null)),
+			Effect.flatMap((res) =>
+				Effect.sync(() => {
+					if (!res || res.killed) return;
+					if (res.code === 0) {
+						fileErrors.delete(file); // fixed since the last edit — don't report the stale error
+						return;
+					}
+					fileErrors.set(file, (res.stdout + "\n" + res.stderr).trim());
+				}),
+			),
+			Effect.catch(() => Effect.void),
+		);
+		let run: Promise<void>;
+		run = Effect.runPromise(check.pipe(Effect.ensuring(Effect.sync(() => inFlight.delete(run)))));
 		inFlight.add(run);
-	});
+			}),
+		),
+	);
 
 	// Tier 2: global check + buffered file errors reported once the agent settles.
-	pi.on("agent_settled", async (_event, ctx) => {
-		if (!current) current = findConfig(ctx.cwd); // discovery may have written config this session
-		if (!current) {
-			if (!askedDiscovery) {
-				// no config seen this session — ask the agent to discover it, once, and only for real projects
-				askedDiscovery = true;
-				const probe = repoRootsUp(ctx.cwd).find(hasGitMarker);
-				if (!probe) return; // non-git dir (home, scratch): nothing to check here, stay silent
+	pi.on("agent_settled", (_event, ctx) =>
+		Effect.runPromise(
+			Effect.gen(function* () {
+				if (!current) current = findConfig(ctx.cwd); // discovery may have written config this session
+				if (!current) {
+					if (!askedDiscovery) {
+						// no config seen this session — ask the agent to discover it, once, and only for real projects
+						askedDiscovery = true;
+						const probe = repoRootsUp(ctx.cwd).find(hasGitMarker);
+						if (!probe) return; // non-git dir (home, scratch): nothing to check here, stay silent
+						pi.sendMessage(
+							{
+								customType: "code-diagnostic-discovery",
+								display: true,
+								content: [
+									`This repo (${probe}) has no code-diagnostic config yet.`,
+									`Discover it once: inspect the repo (package.json scripts, tsconfig.json, Cargo.toml, go.mod, CMakeLists.txt...),`,
+									"propose a `check` command (and optional `fileCheck` with ${file} placeholder for per-file linting).",
+									"Self-test the proposed command once via your bash tool, then ask the user (ask_user_question, single select):",
+									"keep → write config JSON {check, fileCheck?, enabled: true} to " +
+										configPath(probe),
+									"rescan → propose a different command (max 2 attempts)",
+									"off → write {check, enabled: false}",
+									"If nothing in this repo fits any checker, write {check: '<repo build/check command>', enabled: true} or off.",
+									"Keep the schema exactly as specified. Do not add fields.",
+								].join("\n"),
+							},
+							{ triggerTurn: true, deliverAs: "followUp" },
+						);
+					}
+					return;
+				}
+				const { config, root } = current;
+				if (!config.enabled || lastRunAborted) return;
+				if (!dirtySinceReport && checkedOnce) return; // nothing changed since last check — don't re-exec
+				checkedOnce = true;
+
+				const globalOut = yield* runCheck(config, root);
+				// fire-and-forget fileChecks slower than the settle boundary would land after the
+				// report is built and cleared, dropping the diagnostic. Bounded by the 30s exec timeout.
+				if (inFlight.size) {
+					yield* Effect.tryPromise(() => Promise.all([...inFlight])).pipe(Effect.catch(() => Effect.void));
+				}
+				const sections: string[] = [];
+				if (globalOut) sections.push(`[${config.check}] ${globalOut}`);
+				for (const [file, out] of fileErrors)
+					sections.push(
+						`[${splitFileCmd(config.fileCheck ?? "", file)
+							.flat()
+							.join(" ")}] ${out}`,
+					);
+				fileErrors.clear();
+				dirtySinceReport = false;
+
+				if (!sections.length) return;
+				const report = truncate(sections.join("\n\n"));
+				const same = report === lastReport;
+				lastReport = report;
+
+				// Same errors again with no edits since → show only, don't wake the agent (loop guard).
 				pi.sendMessage(
 					{
-						customType: "code-diagnostic-discovery",
+						customType: "code-diagnostic",
 						display: true,
-						content: [
-							`This repo (${probe}) has no code-diagnostic config yet.`,
-							`Discover it once: inspect the repo (package.json scripts, tsconfig.json, Cargo.toml, go.mod, CMakeLists.txt...),`,
-							"propose a `check` command (and optional `fileCheck` with ${file} placeholder for per-file linting).",
-							"Self-test the proposed command once via your bash tool, then ask the user (ask_user_question, single select):",
-							"keep → write config JSON {check, fileCheck?, enabled: true} to " + configPath(probe),
-							"rescan → propose a different command (max 2 attempts)",
-							"off → write {check, enabled: false}",
-							"If nothing in this repo fits any checker, write {check: '<repo build/check command>', enabled: true} or off.",
-							"Keep the schema exactly as specified. Do not add fields.",
-						].join("\n"),
+						content: report,
 					},
-					{ triggerTurn: true, deliverAs: "followUp" },
+					{ triggerTurn: !same, deliverAs: "followUp" },
 				);
-			}
-			return;
-		}
-		const { config, root } = current;
-		if (!config.enabled || lastRunAborted) return;
-		if (!dirtySinceReport && checkedOnce) return; // nothing changed since last check — don't re-exec
-		checkedOnce = true;
-
-		const globalOut = await runCheck(config, root);
-		// fire-and-forget fileChecks slower than the settle boundary would land after the
-		// report is built and cleared, dropping the diagnostic. Bounded by the 30s exec timeout.
-		if (inFlight.size) await Promise.all([...inFlight]);
-		const sections: string[] = [];
-		if (globalOut) sections.push(`[${config.check}] ${globalOut}`);
-		for (const [file, out] of fileErrors) sections.push(`[${splitFileCmd(config.fileCheck ?? "", file).flat().join(" ")}] ${out}`);
-		fileErrors.clear();
-		dirtySinceReport = false;
-
-		if (!sections.length) return;
-		const report = truncate(sections.join("\n\n"));
-		const same = report === lastReport;
-		lastReport = report;
-
-		// Same errors again with no edits since → show only, don't wake the agent (loop guard).
-		pi.sendMessage(
-			{ customType: "code-diagnostic", display: true, content: report },
-			{ triggerTurn: !same, deliverAs: "followUp" },
-		);
-	});
+			}),
+		),
+	);
 }

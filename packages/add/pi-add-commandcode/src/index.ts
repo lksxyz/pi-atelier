@@ -18,11 +18,7 @@
  *   /commandcode          status (key, model count, ZDR)
  *   /commandcode zdr [on|off]
  */
-import type {
-  ExtensionAPI,
-  ProviderConfig,
-  ProviderModelConfig,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
 // pi's extension loader aliases only the pi-ai root, /compat, /oauth, and
 // /providers/all. Deeper paths (e.g. providers/anthropic.models) fail to resolve at
@@ -31,6 +27,7 @@ import { getModels } from "@earendil-works/pi-ai/compat";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { Effect } from "effect";
 
 const BASE_URL = "https://api.commandcode.ai/provider/v1";
 // The Anthropic SDK posts to `<baseUrl>/v1/messages`, so Claude models drop the /v1.
@@ -117,28 +114,32 @@ interface ModelCard {
 const stateFile = join(getAgentDir(), "commandcode.json");
 let zdrOn = false;
 
-async function loadState() {
+const loadState = Effect.fnUntraced(function* () {
+  const content = yield* Effect.tryPromise(() => readFile(stateFile, "utf8")).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+  if (content === undefined) {
+    zdrOn = false;
+    return;
+  }
   try {
-    zdrOn = JSON.parse(await readFile(stateFile, "utf8")).zdr === true;
+    zdrOn = JSON.parse(content).zdr === true;
   } catch {
     zdrOn = false;
   }
-}
-async function saveState() {
-  await mkdir(dirname(stateFile), { recursive: true });
-  await writeFile(stateFile, JSON.stringify({ zdr: zdrOn }));
-}
+});
+const saveState = Effect.fnUntraced(function* () {
+  yield* Effect.tryPromise(() => mkdir(dirname(stateFile), { recursive: true }));
+  yield* Effect.tryPromise(() => writeFile(stateFile, JSON.stringify({ zdr: zdrOn })));
+});
 
 function commandcodeKey(): string | undefined {
   const cred = readStoredCredential("commandcode");
-  return (
-    (cred?.type === "api_key" ? cred.key : undefined) ??
-    process.env.COMMANDCODE_API_KEY
-  );
+  return (cred?.type === "api_key" ? cred.key : undefined) ?? process.env.COMMANDCODE_API_KEY;
 }
 
 // `persist` stores whole Model objects, so each entry carries its own provider tag.
-type MappedModel = ProviderModelConfig & {
+type MappedModel = Extract<ProviderModelConfig, { contextWindow: number }> & {
   provider: string;
   baseUrl: string;
   api: "anthropic-messages" | "openai-completions";
@@ -162,9 +163,7 @@ function mapModel(m: ModelCard): MappedModel {
       contextWindow: m.context_length ?? builtin.contextWindow,
     };
   }
-  const [input, output, cacheRead, cacheWrite, vision, reasoning] = CATALOG[
-    m.id
-  ] ?? [0, 0, 0, 0, 0, 1];
+  const [input, output, cacheRead, cacheWrite, vision, reasoning] = CATALOG[m.id] ?? [0, 0, 0, 0, 0, 1];
   return {
     id: m.id,
     name: m.name ?? m.id,
@@ -181,144 +180,145 @@ function mapModel(m: ModelCard): MappedModel {
   };
 }
 
-async function fetchCatalog(
+const fetchCatalog = Effect.fnUntraced(function* (
   signal?: AbortSignal,
   etag?: string,
-): Promise<{ models: MappedModel[]; etag?: string } | "not-modified" | undefined> {
+): Effect.fn.Return<{ models: MappedModel[]; etag?: string } | "not-modified" | undefined, unknown> {
   const key = commandcodeKey();
   const headers: Record<string, string> = { Accept: "application/json" };
   if (key) headers.Authorization = `Bearer ${key}`;
   if (etag) headers["If-None-Match"] = etag;
-  let res: Response;
-  try {
-    res = await fetch(`${BASE_URL}/models`, { headers, signal });
-  } catch (err) {
-    if ((err as Error).name === "AbortError") throw err;
-    return undefined; // offline
-  }
-  if (res.status === 304) return "not-modified";
+  const res = yield* Effect.tryPromise((interruptSignal) =>
+    fetch(`${BASE_URL}/models`, {
+      headers,
+      signal: signal ? AbortSignal.any([signal, interruptSignal]) : interruptSignal,
+    }),
+  );
+  if (res.status === 304) return "not-modified" as const;
   if (!res.ok) {
-    console.error(
-      `[commandcode] models fetch failed: ${res.status} ${res.statusText}`,
-    );
+    yield* Effect.sync(() => {
+      console.error(`[commandcode] models fetch failed: ${res.status} ${res.statusText}`);
+    });
     return undefined;
   }
-  const data = (await res.json()) as { data?: ModelCard[] };
+  const data = yield* Effect.tryPromise(() => res.json() as Promise<{ data?: ModelCard[] }>);
   return {
     models: (data.data ?? []).map(mapModel),
     etag: res.headers.get("etag") ?? undefined,
   };
-}
+});
 
 // The return value REPLACES the provider's models, so every path must fall back to
 // the factory's catalog. Returning `context.stored` alone wipes it: the first refresh
 // runs before anything is persisted, so stored is empty and the 58 models vanish.
 function makeRefreshModels(factoryModels: MappedModel[]) {
-  return async function refreshModels(
-    context: RefreshModelsContext,
-  ): Promise<ProviderModelConfig[]> {
-    const fallback = context.stored?.models?.length
-      ? [...context.stored.models]
-      : factoryModels;
-    if (context.allowNetwork === false) return fallback;
-    let result: Awaited<ReturnType<typeof fetchCatalog>>;
-    try {
-      result = await fetchCatalog(context.signal, context.stored?.etag);
-    } catch {
-      return fallback; // aborted
-    }
-    if (result === undefined) return fallback; // offline or HTTP error
-    if (result === "not-modified") {
-      await context.publish({ persist: context.stored });
-      return fallback;
-    }
-    await context.publish({
-      persist: {
-        models: result.models,
-        etag: result.etag,
-        checkedAt: Date.now(),
-      },
-    });
-    return result.models;
+  return function refreshModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const fallback = context.stored?.models?.length ? [...context.stored.models] : factoryModels;
+        if (context.allowNetwork === false) return fallback;
+        const result = yield* fetchCatalog(context.signal, context.stored?.etag).pipe(
+          Effect.catch(() => Effect.succeed(undefined)),
+        );
+        if (result === undefined) return fallback; // offline, aborted, or HTTP error
+        if (result === "not-modified") {
+          yield* Effect.tryPromise(() => context.publish({ persist: context.stored }));
+          return fallback;
+        }
+        yield* Effect.tryPromise(() =>
+          context.publish({
+            persist: {
+              models: result.models,
+              etag: result.etag,
+              checkedAt: Date.now(),
+            },
+          }),
+        );
+        return result.models;
+      }),
+    );
   };
 }
 
-export default async function (pi: ExtensionAPI) {
-  await loadState();
+export default function (pi: ExtensionAPI): Promise<void> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      yield* loadState();
 
-  // Fetched here rather than in session_start so pi has the catalog before startup
-  // finishes — that is what makes the models visible to `pi --list-models`.
-  const initial = await fetchCatalog().catch(() => undefined);
-  const models =
-    initial && initial !== "not-modified" ? initial.models : undefined;
-  const refreshModels = makeRefreshModels(models ?? []);
+      // Fetched here rather than in session_start so pi has the catalog before startup
+      // finishes — that is what makes the models visible to `pi --list-models`.
+      const initial = yield* fetchCatalog().pipe(Effect.catch(() => Effect.succeed(undefined)));
+      const models = initial && initial !== "not-modified" ? initial.models : undefined;
+      const refreshModels = makeRefreshModels(models ?? []);
 
-  const registerProvider = () => {
-    const config: ProviderConfig = {
-      name: "Command Code",
-      baseUrl: BASE_URL,
-      api: "openai-completions",
-      apiKey: "$COMMANDCODE_API_KEY",
-      authHeader: true,
-      headers: zdrOn ? { "x-cmd-zdr": "1" } : undefined,
-      // Omit `models` when the fetch failed: passing [] would wipe the catalog,
-      // while omitting it leaves the last-known models in place.
-      ...(models ? { models } : {}),
-      refreshModels,
-    };
-    pi.registerProvider("commandcode", config);
-  };
-  registerProvider();
+      const registerProvider = () => {
+        const config: ProviderConfig = {
+          name: "Command Code",
+          baseUrl: BASE_URL,
+          api: "openai-completions",
+          apiKey: "$COMMANDCODE_API_KEY",
+          authHeader: true,
+          headers: zdrOn ? { "x-cmd-zdr": "1" } : undefined,
+          // Omit `models` when the fetch failed: passing [] would wipe the catalog,
+          // while omitting it leaves the last-known models in place.
+          ...(models ? { models } : {}),
+          refreshModels,
+        };
+        pi.registerProvider("commandcode", config);
+      };
+      registerProvider();
 
-  const syncStatus = (
-    ctx: { ui: { setStatus(k: string, v: string | undefined): void } },
-    model?: { provider?: string },
-  ) => {
-    const on = model?.provider === "commandcode" && zdrOn;
-    ctx.ui.setStatus("commandcode", on ? "ZDR" : undefined);
-  };
+      const syncStatus = (
+        ctx: { ui: { setStatus(k: string, v: string | undefined): void } },
+        model?: { provider?: string },
+      ) => {
+        const on = model?.provider === "commandcode" && zdrOn;
+        ctx.ui.setStatus("commandcode", on ? "ZDR" : undefined);
+      };
 
-  pi.on("session_start", (_event, ctx) => {
-    syncStatus(ctx, ctx.model);
-  });
-
-  pi.on("model_select", (event, ctx) => {
-    syncStatus(ctx, event.model);
-  });
-
-  pi.registerCommand("commandcode", {
-    description: "Command Code: status / zdr [on|off]",
-    getArgumentCompletions: (prefix: string) => {
-      const items = ["zdr on", "zdr off"]
-        .filter((v) => v.startsWith(prefix))
-        .map((v) => ({ value: v, label: v }));
-      return items.length > 0 ? items : null;
-    },
-    handler: async (args, ctx) => {
-      const [cmd, ...rest] = (args ?? "").trim().split(/\s+/);
-      if (cmd === "zdr") {
-        zdrOn = rest[0] === "on" ? true : rest[0] === "off" ? false : !zdrOn;
-        await saveState();
-        registerProvider(); // re-register so the ZDR header change takes effect
+      pi.on("session_start", (_event, ctx) => {
         syncStatus(ctx, ctx.model);
-        ctx.ui.notify(
-          `Command Code ZDR ${zdrOn ? "ON" : "off"} — ${
-            zdrOn
-              ? "requests send x-cmd-zdr: 1; models with no ZDR upstream fail with 422 cmd_zdr_no_providers"
-              : "requests may route to any upstream"
-          }`,
-          zdrOn ? "warning" : "info",
-        );
-        return;
-      }
-      const n =
-        ctx.modelRegistry.getProvider("commandcode")?.getModels().length ?? 0;
-      ctx.ui.notify(
-        `Command Code: ${commandcodeKey() ? "logged in" : "no key (/login → Command Code or COMMANDCODE_API_KEY)"} · ` +
-          `${n} models · ZDR ${zdrOn ? "on" : "off"}\n` +
-          `Subcommand: /commandcode zdr [on|off]`,
-        "info",
-      );
-    },
-  });
+      });
+
+      pi.on("model_select", (event, ctx) => {
+        syncStatus(ctx, event.model);
+      });
+
+      pi.registerCommand("commandcode", {
+        description: "Command Code: status / zdr [on|off]",
+        getArgumentCompletions: (prefix: string) => {
+          const items = ["zdr on", "zdr off"].filter((v) => v.startsWith(prefix)).map((v) => ({ value: v, label: v }));
+          return items.length > 0 ? items : null;
+        },
+        handler: (args, ctx) =>
+          Effect.runPromise(
+            Effect.gen(function* () {
+              const [cmd, ...rest] = (args ?? "").trim().split(/\s+/);
+              if (cmd === "zdr") {
+                zdrOn = rest[0] === "on" ? true : rest[0] === "off" ? false : !zdrOn;
+                yield* saveState();
+                registerProvider(); // re-register so the ZDR header change takes effect
+                syncStatus(ctx, ctx.model);
+                ctx.ui.notify(
+                  `Command Code ZDR ${zdrOn ? "ON" : "off"} — ${
+                    zdrOn
+                      ? "requests send x-cmd-zdr: 1; models with no ZDR upstream fail with 422 cmd_zdr_no_providers"
+                      : "requests may route to any upstream"
+                  }`,
+                  zdrOn ? "warning" : "info",
+                );
+                return;
+              }
+              const n = ctx.modelRegistry.getProvider("commandcode")?.getModels().length ?? 0;
+              ctx.ui.notify(
+                `Command Code: ${commandcodeKey() ? "logged in" : "no key (/login → Command Code or COMMANDCODE_API_KEY)"} · ` +
+                  `${n} models · ZDR ${zdrOn ? "on" : "off"}\n` +
+                  `Subcommand: /commandcode zdr [on|off]`,
+                "info",
+              );
+            }),
+          ),
+      });
+    }),
+  );
 }
