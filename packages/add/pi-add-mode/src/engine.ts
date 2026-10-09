@@ -1,4 +1,3 @@
-import { Effect } from "effect";
 import type { Model } from "@earendil-works/pi-ai";
 import type {
 	BeforeAgentStartEvent,
@@ -7,6 +6,7 @@ import type {
 	ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import { Effect } from "effect";
 import { colorize } from "./colors.ts";
 import type { ModeEditor } from "./editor.ts";
 import {

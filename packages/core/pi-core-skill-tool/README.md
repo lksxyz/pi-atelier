@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@lukisxyz/pi-core-skill-tool)](https://www.npmjs.com/package/@lukisxyz/pi-core-skill-tool)
 [![npm downloads](https://img.shields.io/npm/dm/@lukisxyz/pi-core-skill-tool)](https://www.npmjs.com/package/@lukisxyz/pi-core-skill-tool)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/arhen/pi-core-skill-tool)](https://github.com/lksxyz/pi-atelier/tree/main/packages/core/pi-core-skill-tool)
+[![GitHub stars](https://img.shields.io/github/stars/lksxyz/pi-atelier)](https://github.com/lksxyz/pi-atelier/tree/main/packages/core/pi-core-skill-tool)
 
 ## Install
 
@@ -83,7 +83,7 @@ The 3.4K tokens between Ext ON and Ext OFF+flag is the price of **agent-side ski
 Reference environment (the numbers above come from it):
 
 - **Model**: `deepseek/deepseek-v4-flash` (deepseek tokenizer)
-- **Skills loaded**: 69 (23 lark-*, 8 caveman-family, 6 npm-shipped: pi-lens ×4, pi-subagents, mcp-scripting, plus design/security/vercel/next misc)
+- **Skills loaded**: 69 (historical measurement; included third-party npm-shipped skills)
 - **Tool count**: 25 baseline → 26 with the extension (the extra one is `skill`)
 
 Context composition at baseline (26,480 total):
@@ -94,7 +94,7 @@ Context composition at baseline (26,480 total):
 | System prompt text (instructions, guidelines) | ~10.5K | 40% |
 | — of which: skill catalog (`<available_skills>`) | ~7.2K | 27% |
 
-Context excluding skills ≈ **19.3K** — that's pi's floor with this tool set (dominated by pi-subagents ~9.5K + pi-lens ~4.5K tool schemas).
+Context excluding skills ≈ **19.3K** in that historical measurement; current context depends on the installed extensions.
 
 What the extension changes:
 

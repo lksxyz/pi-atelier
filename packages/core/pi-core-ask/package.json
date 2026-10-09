@@ -24,6 +24,9 @@
     "questionnaire",
     "ask"
   ],
+  "dependencies": {
+    "effect": "^4.0.1"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",

@@ -7,8 +7,7 @@ Minimalist [Pi Coding Agent](https://github.com/earendil-works/pi) extensions. O
 config surfaces, minimal context footprint. Independently installable, published separately under the
 `@lukisxyz` npm scope.
 
-Pi Atelier is an independently maintained fork of [arhen/pi-extensions](https://github.com/arhen/pi-extensions).
-It retains the upstream MIT license and copyright notices. This repository is the single source of truth for this fork.
+Pi Atelier is independently maintained under the `@lukisxyz` npm scope. Package licenses retain their respective upstream copyright notices. This repository is the single source of truth for Pi Atelier.
 
 ## Layout
 
@@ -26,7 +25,8 @@ packages/
 │   ├── pi-add-commandcode/
 │   ├── pi-add-deliberate/
 │   ├── pi-add-haiku/
-│   └── pi-add-mode/
+│   ├── pi-add-mode/
+│   └── pi-add-optchat/
 └── pi-toolset/  → installer: manage the installed set
 ```
 
@@ -75,6 +75,7 @@ pi -e npm:@lukisxyz/pi-core-vision
 | [`@lukisxyz/pi-add-deliberate`](packages/add/pi-add-deliberate) | Deliberate advise and plan modes backed by subagent |
 | [`@lukisxyz/pi-add-haiku`](packages/add/pi-add-haiku) | Clean header, footer, and timer following Pi's active theme |
 | [`@lukisxyz/pi-add-mode`](packages/add/pi-add-mode) | Named modes: instructions + tools + model + subagent model, `/mode` and `ctrl+tab` |
+| [`@lukisxyz/pi-add-optchat`](packages/add/pi-add-optchat) | Persistent project chat memory with a bounded, zoomable summary tree |
 
 ## 🔧 Manage the set
 

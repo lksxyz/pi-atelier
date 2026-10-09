@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { Cause, Deferred, Effect, Exit, Fiber, Option, Semaphore } from "effect";
 import { rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -22,6 +21,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import { Cause, Deferred, Effect, Exit, Option, Semaphore } from "effect";
 import { resolveAgentFile } from "./agentfile.ts";
 import { captureCheckpoint, resumePrompt } from "./checkpoint.ts";
 import { CHILD_TALK_TOOLS, type ChildHandlers, createChildTools } from "./child.ts";
@@ -38,7 +38,7 @@ import {
 	SubagentsWidget,
 	truncateText,
 } from "./format.ts";
-import { applyUpstream, resolveNeeds, runWaveScheduler, runWaveSchedulerEffect } from "./graph.ts";
+import { applyUpstream, resolveNeeds, runWaveSchedulerEffect } from "./graph.ts";
 import { createMailbox, type Mailbox } from "./mailbox.ts";
 import { chooseModel, resolveChildModel } from "./models.ts";
 import type { SubagentParamsShape, TaskInput } from "./schemas.ts";
@@ -205,14 +205,17 @@ const probeModel = Effect.fnUntraced(function* (
 	thinking?: string,
 ): Effect.fn.Return<string | undefined> {
 	const reasoningEffort = probeThinking(model, thinking);
-	const exit = yield* Effect.exit(Effect.tryPromise({
-		try: () => ctx.modelRegistry.complete(
-			model,
-			{ messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
-			{ maxTokens: 16, signal, ...(reasoningEffort ? { reasoningEffort } : {}) },
-		),
-		catch: (error) => error instanceof Error ? error : new Error(String(error)),
-	}));
+	const exit = yield* Effect.exit(
+		Effect.tryPromise({
+			try: () =>
+				ctx.modelRegistry.complete(
+					model,
+					{ messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
+					{ maxTokens: 16, signal, ...(reasoningEffort ? { reasoningEffort } : {}) },
+				),
+			catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+		}),
+	);
 	if (Exit.isFailure(exit)) {
 		const error = Cause.findErrorOption(exit.cause);
 		return Option.isSome(error) ? error.value.message : String(Cause.squash(exit.cause));
@@ -255,11 +258,12 @@ const createChildModelRuntime = Effect.fnUntraced(function* (ctx: ExtensionConte
 	if (ids.length === 0) return undefined;
 	const agentDir = getAgentDir();
 	const runtime = yield* Effect.tryPromise({
-		try: () => ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
-		}),
-		catch: (error) => error instanceof Error ? error : new Error(String(error)),
+		try: () =>
+			ModelRuntime.create({
+				authPath: join(agentDir, "auth.json"),
+				modelsPath: join(agentDir, "models.json"),
+			}),
+		catch: (error) => (error instanceof Error ? error : new Error(String(error))),
 	});
 	for (const id of ids) {
 		const native = ctx.modelRegistry.getRegisteredNativeProvider?.(id);
@@ -272,7 +276,7 @@ const createChildModelRuntime = Effect.fnUntraced(function* (ctx: ExtensionConte
 	}
 	yield* Effect.tryPromise({
 		try: () => runtime.refresh({ allowNetwork: false }),
-		catch: (error) => error instanceof Error ? error : new Error(String(error)),
+		catch: (error) => (error instanceof Error ? error : new Error(String(error))),
 	});
 	return runtime;
 });
@@ -510,18 +514,25 @@ export class SubagentManager {
 			const payload = JSON.stringify(this.listRuns().slice(0, 50).map(cloneRun), null, 2);
 
 			const manager = this;
-			const persistence = this.persistLock.withPermits(1)(Effect.gen(function* () {
-				if (seq < manager.persistedSeq) return;
-				const result = yield* Effect.result(Effect.tryPromise({
-					try: async () => {
-						await writeFile(tmp, payload);
-						await rename(tmp, sidecar);
-					},
-					catch: (error) => error,
-				}));
-				if (result._tag === "Success") manager.persistedSeq = seq;
-				else yield* Effect.tryPromise({ try: () => rm(tmp, { force: true }), catch: () => undefined }).pipe(Effect.ignore);
-			}));
+			const persistence = this.persistLock.withPermits(1)(
+				Effect.gen(function* () {
+					if (seq < manager.persistedSeq) return;
+					const result = yield* Effect.result(
+						Effect.tryPromise({
+							try: async () => {
+								await writeFile(tmp, payload);
+								await rename(tmp, sidecar);
+							},
+							catch: (error) => error,
+						}),
+					);
+					if (result._tag === "Success") manager.persistedSeq = seq;
+					else
+						yield* Effect.tryPromise({ try: () => rm(tmp, { force: true }), catch: () => undefined }).pipe(
+							Effect.ignore,
+						);
+				}),
+			);
 			Effect.runFork(persistence.pipe(Effect.ignore));
 		} catch {
 			/* ignore: persistence is best-effort, never fatal */
@@ -686,24 +697,27 @@ export class SubagentManager {
 	private makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): ChildHandlers {
 		const manager = this;
 		return {
-			onAskParent: async (taskId, question, urgent) => Effect.runPromise(Effect.gen(function* () {
-				if (!isLive(task.status)) {
-					return "(your task has already ended — stop work and return immediately)";
-				}
-				manager.updateTask(run, task, { status: "awaiting_parent", pendingQuestion: question }, ctx);
+			onAskParent: async (taskId, question, urgent) =>
+				Effect.runPromise(
+					Effect.gen(function* () {
+						if (!isLive(task.status)) {
+							return "(your task has already ended — stop work and return immediately)";
+						}
+						manager.updateTask(run, task, { status: "awaiting_parent", pendingQuestion: question }, ctx);
 
-				if (!manager.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
-					manager.notifyParent(run, "asked", { taskId: task.id, agent: task.agent, question, urgent });
-				}
+						if (!manager.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
+							manager.notifyParent(run, "asked", { taskId: task.id, agent: task.agent, question, urgent });
+						}
 
-				const reply = yield* manager.awaitParentReplyEffect(run.id, taskId, PARENT_REPLY_TIMEOUT_MS);
+						const reply = yield* manager.awaitParentReplyEffect(run.id, taskId, PARENT_REPLY_TIMEOUT_MS);
 
-				if (!isLive(task.status)) {
-					return "(your task was canceled while you waited — stop work and return immediately)";
-				}
-				manager.updateTask(run, task, { status: "running", pendingQuestion: undefined }, ctx);
-				return reply;
-			})),
+						if (!isLive(task.status)) {
+							return "(your task was canceled while you waited — stop work and return immediately)";
+						}
+						manager.updateTask(run, task, { status: "running", pendingQuestion: undefined }, ctx);
+						return reply;
+					}),
+				),
 			onNotifyParent: (_taskId, message, level) => {
 				this.emit("subagent:intercom", { runId: run.id, taskId: task.id, kind: "notify", level, message });
 				task.notifiedParent = true;
@@ -752,13 +766,11 @@ export class SubagentManager {
 		if (timeoutMs <= 0) return waiting;
 		return Effect.timeoutOrElse(waiting, {
 			duration: timeoutMs,
-			orElse: () => Effect.succeed(
-				"The parent did not answer in time. Proceed autonomously with your best judgment and state the assumption you made in your final answer.",
-			),
+			orElse: () =>
+				Effect.succeed(
+					"The parent did not answer in time. Proceed autonomously with your best judgment and state the assumption you made in your final answer.",
+				),
 		});
-	}
-	private awaitParentReply(runId: string, taskId: string, timeoutMs = 0): Promise<string> {
-		return Effect.runPromise(this.awaitParentReplyEffect(runId, taskId, timeoutMs));
 	}
 	deliverReply(runId: string, taskId: string, message: string): boolean {
 		const pending = this.pendingReplies.get(`${runId}:${taskId}`);
@@ -1324,43 +1336,46 @@ export class SubagentManager {
 
 		const inputById = new Map(run.tasks.map((t, i) => [t.id, inputs[i]]));
 
-		const { skipped } = await Effect.runPromise(runWaveSchedulerEffect(
-			run.tasks.filter((t) => isLive(t.status)),
-			run.mode === "single" ? 1 : run.concurrency,
-			outputs,
-			settled,
-			(task, _index, schedulerSignal) => Effect.tryPromise({
-			try: async () => {
-				const taskSignal = signal ? AbortSignal.any([signal, schedulerSignal]) : schedulerSignal;
-				const input = inputById.get(task.id);
-				if (!input) {
-					this.updateTask(
-						run,
-						task,
-						{ status: "failed", error: `No input for task ${task.id}`, endedAt: Date.now() },
-						ctx,
-						onUpdate,
-					);
-					return;
-				}
-				await this.runChild(
-					run,
-					task,
-					{ ...input, task: applyUpstream(input.task, task.needs ?? [], outputs) },
-					input.task,
-					ctx,
-					taskSignal,
-					onUpdate,
-				);
-				if (task.status === "completed") outputs.set(task.id, task.finalText ?? "");
-				if (run.notifyPerTask && TERMINAL.includes(task.status)) {
-					this.notifyTask(run, task, task.status as "completed" | "failed" | "aborted");
-				}
-			},
-			catch: (error) => error,
-		}),
-			signal,
-		));
+		const { skipped } = await Effect.runPromise(
+			runWaveSchedulerEffect(
+				run.tasks.filter((t) => isLive(t.status)),
+				run.mode === "single" ? 1 : run.concurrency,
+				outputs,
+				settled,
+				(task, _index, schedulerSignal) =>
+					Effect.tryPromise({
+						try: async () => {
+							const taskSignal = signal ? AbortSignal.any([signal, schedulerSignal]) : schedulerSignal;
+							const input = inputById.get(task.id);
+							if (!input) {
+								this.updateTask(
+									run,
+									task,
+									{ status: "failed", error: `No input for task ${task.id}`, endedAt: Date.now() },
+									ctx,
+									onUpdate,
+								);
+								return;
+							}
+							await this.runChild(
+								run,
+								task,
+								{ ...input, task: applyUpstream(input.task, task.needs ?? [], outputs) },
+								input.task,
+								ctx,
+								taskSignal,
+								onUpdate,
+							);
+							if (task.status === "completed") outputs.set(task.id, task.finalText ?? "");
+							if (run.notifyPerTask && TERMINAL.includes(task.status)) {
+								this.notifyTask(run, task, task.status as "completed" | "failed" | "aborted");
+							}
+						},
+						catch: (error) => error,
+					}),
+				signal,
+			),
+		);
 
 		for (const s of skipped) {
 			const task = run.tasks.find((t) => t.id === s.id);

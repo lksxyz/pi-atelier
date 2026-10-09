@@ -10,7 +10,6 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { Effect } from "effect";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -25,6 +24,7 @@ import {
 	SelectList,
 	Text,
 } from "@earendil-works/pi-tui";
+import { Effect } from "effect";
 import { Type } from "typebox";
 import {
 	allowedTools,
@@ -87,7 +87,7 @@ function subagentToolState(pi: ExtensionAPI): "ok" | "missing" | "inactive" {
 	return pi.getActiveTools().includes("subagent") ? "ok" : "inactive";
 }
 
-const prepareMode = Effect.fnUntraced(function*(
+const prepareMode = Effect.fnUntraced(function* (
 	pi: ExtensionAPI,
 	mode: DeliberateMode,
 	ctx: ExtensionContext,
@@ -202,7 +202,10 @@ function cancelledStatus(mode: DeliberateMode, config: DeliberateModeConfig | De
 	return { status: "cancelled", mode, config, message: "configuration unchanged" };
 }
 
-const configureMode = Effect.fnUntraced(function*(mode: DeliberateMode, ctx: ExtensionContext): Effect.fn.Return<DeliberateStatus, unknown> {
+const configureMode = Effect.fnUntraced(function* (
+	mode: DeliberateMode,
+	ctx: ExtensionContext,
+): Effect.fn.Return<DeliberateStatus, unknown> {
 	const agentDir = getAgentDir();
 	const loaded = yield* loadConfig(agentDir);
 	const existing: DeliberateModeConfig | DeliberatePlanConfig =
@@ -226,86 +229,87 @@ const configureMode = Effect.fnUntraced(function*(mode: DeliberateMode, ctx: Ext
 		};
 	});
 	const modelChoice = yield* Effect.tryPromise({
-		try: () => ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
-		const input = new Input({ placeholder: "type to filter models" });
-		input.focused = true;
-		let list!: SelectList;
-		let filtered = modelItems;
-		let visibleCount = 1;
-		let query = "";
-		const container = new Container();
+		try: () =>
+			ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+				const input = new Input({ placeholder: "type to filter models" });
+				input.focused = true;
+				let list!: SelectList;
+				let filtered = modelItems;
+				let visibleCount = 1;
+				let query = "";
+				const container = new Container();
 
-		const rebuild = () => {
-			const selectedValue = list?.getSelectedItem()?.value;
-			container.clear();
-			container.addChild(new Text(theme.fg("accent", theme.bold(`Deliberate ${mode}: choose model`))));
-			container.addChild(input);
-			filtered = query ? fuzzyFilter(modelItems, query, (item) => item.value) : modelItems;
-			visibleCount = Math.max(1, Math.min(filtered.length, Math.floor(tui.terminal.rows / 2) - 4));
-			list = new SelectList(filtered, visibleCount, {
-				selectedPrefix: (text) => theme.fg("accent", text),
-				selectedText: (text) => theme.fg("accent", text),
-				description: (text) => theme.fg("muted", text),
-				scrollInfo: (text) => theme.fg("dim", text),
-				noMatch: (text) => theme.fg("warning", text),
-			});
-			if (selectedValue) {
-				const selectedIndex = filtered.findIndex((item) => item.value === selectedValue);
-				if (selectedIndex >= 0) list.setSelectedIndex(selectedIndex);
-			}
-			list.onSelect = (item) => done(item.value);
-			list.onCancel = () => done(undefined);
-			container.addChild(list);
-			container.addChild(
-				new Text(
-					theme.fg(
-						"dim",
-						`${filtered.length} model(s) · ↑↓ move · PgUp/PgDn page · type to filter · enter select · esc cancel`,
-					),
-				),
-			);
-		};
-		rebuild();
+				const rebuild = () => {
+					const selectedValue = list?.getSelectedItem()?.value;
+					container.clear();
+					container.addChild(new Text(theme.fg("accent", theme.bold(`Deliberate ${mode}: choose model`))));
+					container.addChild(input);
+					filtered = query ? fuzzyFilter(modelItems, query, (item) => item.value) : modelItems;
+					visibleCount = Math.max(1, Math.min(filtered.length, Math.floor(tui.terminal.rows / 2) - 4));
+					list = new SelectList(filtered, visibleCount, {
+						selectedPrefix: (text) => theme.fg("accent", text),
+						selectedText: (text) => theme.fg("accent", text),
+						description: (text) => theme.fg("muted", text),
+						scrollInfo: (text) => theme.fg("dim", text),
+						noMatch: (text) => theme.fg("warning", text),
+					});
+					if (selectedValue) {
+						const selectedIndex = filtered.findIndex((item) => item.value === selectedValue);
+						if (selectedIndex >= 0) list.setSelectedIndex(selectedIndex);
+					}
+					list.onSelect = (item) => done(item.value);
+					list.onCancel = () => done(undefined);
+					container.addChild(list);
+					container.addChild(
+						new Text(
+							theme.fg(
+								"dim",
+								`${filtered.length} model(s) · ↑↓ move · PgUp/PgDn page · type to filter · enter select · esc cancel`,
+							),
+						),
+					);
+				};
+				rebuild();
 
-		return {
-			render: (width) => container.render(width),
-			invalidate: () => container.invalidate(),
-			handleInput: (data) => {
-				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-					done(undefined);
-					return;
-				}
-				if (matchesKey(data, "enter") || matchesKey(data, "return")) {
-					list.handleInput(data);
-					return;
-				}
-				if (matchesKey(data, "up") || matchesKey(data, "down")) {
-					list.handleInput(data);
-					tui.requestRender();
-					return;
-				}
-				if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
-					const selectedIndex = filtered.findIndex((item) => item.value === list.getSelectedItem()?.value);
-					const direction = matchesKey(data, "pageUp") ? -1 : 1;
-					list.setSelectedIndex(selectedIndex + direction * visibleCount);
-					tui.requestRender();
-					return;
-				}
-				input.handleInput(data);
-				const next = input.getValue();
-				if (next !== query) {
-					query = next;
-					rebuild();
-				}
-				tui.requestRender();
-			},
-			handleMouse: (event) => {
-				const result = list.handleMouse?.(event);
-				if (result?.render) tui.requestRender();
-				return result;
-			},
-		};
-		}),
+				return {
+					render: (width) => container.render(width),
+					invalidate: () => container.invalidate(),
+					handleInput: (data) => {
+						if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+							done(undefined);
+							return;
+						}
+						if (matchesKey(data, "enter") || matchesKey(data, "return")) {
+							list.handleInput(data);
+							return;
+						}
+						if (matchesKey(data, "up") || matchesKey(data, "down")) {
+							list.handleInput(data);
+							tui.requestRender();
+							return;
+						}
+						if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
+							const selectedIndex = filtered.findIndex((item) => item.value === list.getSelectedItem()?.value);
+							const direction = matchesKey(data, "pageUp") ? -1 : 1;
+							list.setSelectedIndex(selectedIndex + direction * visibleCount);
+							tui.requestRender();
+							return;
+						}
+						input.handleInput(data);
+						const next = input.getValue();
+						if (next !== query) {
+							query = next;
+							rebuild();
+						}
+						tui.requestRender();
+					},
+					handleMouse: (event) => {
+						const result = list.handleMouse?.(event);
+						if (result?.render) tui.requestRender();
+						return result;
+					},
+				};
+			}),
 		catch: (error) => error,
 	});
 	if (modelChoice === undefined) return cancelledStatus(mode, existing);
@@ -385,7 +389,7 @@ function refreshPlanUi(ctx: ExtensionContext): void {
 	ctx.ui.setStatus("deliberate-plan", theme.fg("accent", "plan"));
 }
 
-const viewSavedPlan = Effect.fnUntraced(function*(ctx: ExtensionContext) {
+const viewSavedPlan = Effect.fnUntraced(function* (ctx: ExtensionContext) {
 	const plan = latestPlanEntry(ctx.sessionManager.getBranch());
 	if (!plan) {
 		ctx.ui.notify("No saved deliberate plan yet. Run /plan first.", "warning");
@@ -439,7 +443,7 @@ const viewSavedPlan = Effect.fnUntraced(function*(ctx: ExtensionContext) {
 	});
 });
 
-const showStatus = Effect.fnUntraced(function*(ctx: ExtensionContext) {
+const showStatus = Effect.fnUntraced(function* (ctx: ExtensionContext) {
 	const loaded = yield* loadConfig(getAgentDir());
 	const lines = [`Deliberate config: ${loaded.path}`];
 	if (loaded.error) lines.push(`invalid: ${loaded.error}`);
@@ -485,7 +489,7 @@ function notifyConfigureResult(ctx: ExtensionContext, result: DeliberateStatus):
 
 const CONFIG_USAGE = "Usage: /deliberate-config [advise|plan|status|clear [advise|plan]]";
 
-const configureModeWithNotify = Effect.fnUntraced(function*(mode: DeliberateMode, ctx: ExtensionContext) {
+const configureModeWithNotify = Effect.fnUntraced(function* (mode: DeliberateMode, ctx: ExtensionContext) {
 	const result = yield* configureMode(mode, ctx).pipe(
 		Effect.match({
 			onFailure: (error) => ({ error }),
@@ -496,8 +500,8 @@ const configureModeWithNotify = Effect.fnUntraced(function*(mode: DeliberateMode
 	else notifyConfigureResult(ctx, result.status);
 });
 
-const clearModeWithNotify = Effect.fnUntraced(function*(mode: DeliberateMode, ctx: ExtensionContext) {
-	const result = yield* Effect.gen(function*() {
+const clearModeWithNotify = Effect.fnUntraced(function* (mode: DeliberateMode, ctx: ExtensionContext) {
+	const result = yield* Effect.gen(function* () {
 		const agentDir = getAgentDir();
 		const next = clearMode((yield* loadConfig(agentDir)).config, mode);
 		if (!next) {
@@ -516,7 +520,7 @@ const clearModeWithNotify = Effect.fnUntraced(function*(mode: DeliberateMode, ct
 	else ctx.ui.notify(result.message, "info");
 });
 
-const chooseClearMode = Effect.fnUntraced(function*(ctx: ExtensionContext) {
+const chooseClearMode = Effect.fnUntraced(function* (ctx: ExtensionContext) {
 	const choice = yield* Effect.tryPromise({
 		try: () => ctx.ui.select("Deliberate config: clear which mode?", ["advise", "plan"]),
 		catch: (error) => error,
@@ -562,59 +566,63 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 			const items = values.map((value) => ({ value, label: value }));
 			return items.length > 0 ? items : null;
 		},
-		handler: (args, ctx) => Effect.runPromise(Effect.gen(function*() {
-			const tokens = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
-			const head = tokens[0] ?? "";
-			const tail = tokens[1];
-			if (!head) {
-				if (!ctx.hasUI) {
+		handler: (args, ctx) =>
+			Effect.runPromise(
+				Effect.gen(function* () {
+					const tokens = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+					const head = tokens[0] ?? "";
+					const tail = tokens[1];
+					if (!head) {
+						if (!ctx.hasUI) {
+							ctx.ui.notify(CONFIG_USAGE, "warning");
+							return;
+						}
+						const choice = yield* Effect.tryPromise({
+							try: () =>
+								ctx.ui.select("Deliberate config", ["Configure advise", "Configure plan", "Status", "Clear mode"]),
+							catch: (error) => error,
+						});
+						if (choice === "Configure advise") yield* configureModeWithNotify("advise", ctx);
+						else if (choice === "Configure plan") yield* configureModeWithNotify("plan", ctx);
+						else if (choice === "Status") yield* showStatus(ctx);
+						else if (choice === "Clear mode") {
+							const mode = yield* chooseClearMode(ctx);
+							if (mode) yield* clearModeWithNotify(mode, ctx);
+						}
+						return;
+					}
+					if (head === "status") {
+						if (tail) {
+							ctx.ui.notify(CONFIG_USAGE, "warning");
+							return;
+						}
+						yield* showStatus(ctx);
+						return;
+					}
+					if (head === "advise" || head === "plan") {
+						if (tail) {
+							ctx.ui.notify(CONFIG_USAGE, "warning");
+							return;
+						}
+						yield* configureModeWithNotify(head, ctx);
+						return;
+					}
+					if (head === "clear") {
+						if (tail === "advise" || tail === "plan") {
+							yield* clearModeWithNotify(tail, ctx);
+							return;
+						}
+						if (tail || !ctx.hasUI) {
+							ctx.ui.notify(CONFIG_USAGE, "warning");
+							return;
+						}
+						const mode = yield* chooseClearMode(ctx);
+						if (mode) yield* clearModeWithNotify(mode, ctx);
+						return;
+					}
 					ctx.ui.notify(CONFIG_USAGE, "warning");
-					return;
-				}
-				const choice = yield* Effect.tryPromise({
-					try: () => ctx.ui.select("Deliberate config", ["Configure advise", "Configure plan", "Status", "Clear mode"]),
-					catch: (error) => error,
-				});
-				if (choice === "Configure advise") yield* configureModeWithNotify("advise", ctx);
-				else if (choice === "Configure plan") yield* configureModeWithNotify("plan", ctx);
-				else if (choice === "Status") yield* showStatus(ctx);
-				else if (choice === "Clear mode") {
-					const mode = yield* chooseClearMode(ctx);
-					if (mode) yield* clearModeWithNotify(mode, ctx);
-				}
-				return;
-			}
-			if (head === "status") {
-				if (tail) {
-					ctx.ui.notify(CONFIG_USAGE, "warning");
-					return;
-				}
-				yield* showStatus(ctx);
-				return;
-			}
-			if (head === "advise" || head === "plan") {
-				if (tail) {
-					ctx.ui.notify(CONFIG_USAGE, "warning");
-					return;
-				}
-				yield* configureModeWithNotify(head, ctx);
-				return;
-			}
-			if (head === "clear") {
-				if (tail === "advise" || tail === "plan") {
-					yield* clearModeWithNotify(tail, ctx);
-					return;
-				}
-				if (tail || !ctx.hasUI) {
-					ctx.ui.notify(CONFIG_USAGE, "warning");
-					return;
-				}
-				const mode = yield* chooseClearMode(ctx);
-				if (mode) yield* clearModeWithNotify(mode, ctx);
-				return;
-			}
-			ctx.ui.notify(CONFIG_USAGE, "warning");
-		})),
+				}),
+			),
 	});
 
 	pi.registerCommand("plan-view", {
@@ -645,18 +653,18 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 		}),
 		execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return Effect.runPromise(
-				Effect.gen(function*() {
-			if (params.action === "configure") {
-				if (!ctx.hasUI) {
-					return toolResult({
-						status: "configure-requires-ui",
-						mode: params.mode,
-						message: `configuration requires interactive UI; run /deliberate-config ${params.mode}`,
-					});
-				}
-				return toolResult(yield* configureMode(params.mode, ctx));
-			}
-			return toolResult(yield* prepareMode(pi, params.mode, ctx, signal ?? ctx.signal));
+				Effect.gen(function* () {
+					if (params.action === "configure") {
+						if (!ctx.hasUI) {
+							return toolResult({
+								status: "configure-requires-ui",
+								mode: params.mode,
+								message: `configuration requires interactive UI; run /deliberate-config ${params.mode}`,
+							});
+						}
+						return toolResult(yield* configureMode(params.mode, ctx));
+					}
+					return toolResult(yield* prepareMode(pi, params.mode, ctx, signal ?? ctx.signal));
 				}),
 			);
 		},
@@ -677,30 +685,33 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 		}),
 		execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return Effect.runPromise(
-				Effect.gen(function*() {
-			const loaded = yield* loadConfig(getAgentDir());
-			const planConfig = loaded.config?.plan;
-			if (!planConfig) {
-				throw new Error(
-					`deliberate plan mode is not configured; run /deliberate-config plan${loaded.error ? ` (config error: ${loaded.error})` : ""}`,
-				);
-			}
-			const empty = validatePlanMarkdown(params.markdown);
-			if (empty) throw new Error(empty);
-			const path = resolvePlanPath(planConfig.path, ctx.cwd);
-			yield* Effect.tryPromise({
-				try: () => withFileMutationQueue(path, () => Effect.runPromise(
-					atomicWriteFile(path, params.markdown.endsWith("\n") ? params.markdown : `${params.markdown}\n`),
-				)),
-				catch: (error) => error,
-			});
-			const savedAt = new Date().toISOString();
-			pi.appendEntry("deliberate-plan", { path, savedAt });
-			refreshPlanUi(ctx);
-			return {
-				content: [{ type: "text" as const, text: `Saved plan to ${path}. View it with /plan-view (Ctrl+Alt+P).` }],
-				details: { path, savedAt },
-			};
+				Effect.gen(function* () {
+					const loaded = yield* loadConfig(getAgentDir());
+					const planConfig = loaded.config?.plan;
+					if (!planConfig) {
+						throw new Error(
+							`deliberate plan mode is not configured; run /deliberate-config plan${loaded.error ? ` (config error: ${loaded.error})` : ""}`,
+						);
+					}
+					const empty = validatePlanMarkdown(params.markdown);
+					if (empty) throw new Error(empty);
+					const path = resolvePlanPath(planConfig.path, ctx.cwd);
+					yield* Effect.tryPromise({
+						try: () =>
+							withFileMutationQueue(path, () =>
+								Effect.runPromise(
+									atomicWriteFile(path, params.markdown.endsWith("\n") ? params.markdown : `${params.markdown}\n`),
+								),
+							),
+						catch: (error) => error,
+					});
+					const savedAt = new Date().toISOString();
+					pi.appendEntry("deliberate-plan", { path, savedAt });
+					refreshPlanUi(ctx);
+					return {
+						content: [{ type: "text" as const, text: `Saved plan to ${path}. View it with /plan-view (Ctrl+Alt+P).` }],
+						details: { path, savedAt },
+					};
 				}),
 			);
 		},

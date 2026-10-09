@@ -1,6 +1,6 @@
-import { Effect } from "effect";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
+import { Effect } from "effect";
 import { ModeEditor } from "./editor.ts";
 import { ModeEngine, type PersistedState } from "./engine.ts";
 import { cycleList, isDefaultModeName, nextInCycle } from "./logic.ts";

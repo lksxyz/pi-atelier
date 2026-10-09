@@ -1,6 +1,6 @@
-import { Effect } from "effect";
 import { DynamicBorder, type ExtensionContext, getSelectListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, Input, matchesKey, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { Effect } from "effect";
 import { colorize, colorLabel } from "./colors.ts";
 import type { ModeEngine } from "./engine.ts";
 import { describeTools, isDefaultModeName, parseToolList, thinkingLevelsFor } from "./logic.ts";

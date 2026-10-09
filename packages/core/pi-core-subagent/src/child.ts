@@ -1,5 +1,4 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Effect } from "effect";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { MailboxMessage } from "./mailbox.ts";

@@ -26,6 +26,9 @@
 		"test": "bun test",
 		"check": "bun run typecheck && bun run lint && bun test"
 	},
+	"dependencies": {
+		"effect": "^4.0.1"
+	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*",

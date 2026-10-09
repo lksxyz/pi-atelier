@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Effect } from "effect";
 import { clearAgentFileCache } from "../src/agentfile.ts";
 import { SubagentManager } from "../src/manager.ts";
 
@@ -211,9 +212,13 @@ describe("cancel", () => {
 		const m = makeManager();
 		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
 
-		const waiting = (
-			m as unknown as { awaitParentReply: (r: string, t: string, ms?: number) => Promise<string> }
-		).awaitParentReply(run.id, "task_1");
+		const waiting = Effect.runPromise(
+			(
+				m as unknown as {
+					awaitParentReplyEffect: (r: string, t: string, ms?: number) => Effect.Effect<string>;
+				}
+			).awaitParentReplyEffect(run.id, "task_1"),
+		);
 		expect(m.deliverReply(run.id, "task_1", "answer one")).toBe(true);
 		expect(await waiting).toBe("answer one");
 		expect(m.deliverReply(run.id, "task_1", "answer two")).toBe(false);

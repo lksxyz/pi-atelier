@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Session-log-backed long-running /goal mode for pi: automatic continuation after agent_settled, token budget, strict completion/blocked audits, cache-stable system prefix.",
   "license": "MIT",
-  "author": "arhen",
+  "author": "Pi Atelier contributors",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lksxyz/pi-atelier.git",
@@ -28,6 +28,9 @@
     "pi-package",
     "goal"
   ],
+  "dependencies": {
+    "effect": "^4.0.1"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

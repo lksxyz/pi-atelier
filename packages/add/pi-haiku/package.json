@@ -27,6 +27,9 @@
       "./src/index.ts"
     ]
   },
+  "dependencies": {
+    "effect": "^4.0.1"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

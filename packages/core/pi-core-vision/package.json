@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Transparent vision fallback for text-only pi models — overrides read so image files are described by a vision model when the active model cannot see images. Supports any OpenAI-compatible endpoint.",
   "license": "MIT",
-  "author": "arhen",
+  "author": "Pi Atelier contributors",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -33,6 +33,9 @@
     "README.md",
     "LICENSE"
   ],
+  "dependencies": {
+    "effect": "^4.0.1"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"

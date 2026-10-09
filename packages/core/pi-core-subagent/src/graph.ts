@@ -95,20 +95,28 @@ const runConcurrent = <T>(
 		const runWave = Effect.forEach(
 			items,
 			(item, index) =>
-				Effect.scoped(Effect.gen(function* () {
-					const fiberSignal = yield* Effect.abortSignal;
-					return yield* fn(item, index, externalSignal ? AbortSignal.any([externalSignal, fiberSignal]) : fiberSignal);
-				}).pipe(Effect.asVoid)).pipe(Effect.exit),
+				Effect.scoped(
+					Effect.gen(function* () {
+						const fiberSignal = yield* Effect.abortSignal;
+						return yield* fn(
+							item,
+							index,
+							externalSignal ? AbortSignal.any([externalSignal, fiberSignal]) : fiberSignal,
+						);
+					}).pipe(Effect.asVoid),
+				).pipe(Effect.exit),
 			{ concurrency: Math.max(1, Math.min(concurrency, items.length)) },
-		).pipe(Effect.flatMap((results) => {
-			const failure = results.find(Exit.isFailure);
-			if (failure && Exit.isFailure(failure)) {
-				const error = Cause.findErrorOption(failure.cause);
-				if (Option.isSome(error)) return Effect.fail(error.value);
-				return Effect.failCause(failure.cause);
-			}
-			return Effect.void;
-		}));
+		).pipe(
+			Effect.flatMap((results) => {
+				const failure = results.find(Exit.isFailure);
+				if (failure && Exit.isFailure(failure)) {
+					const error = Cause.findErrorOption(failure.cause);
+					if (Option.isSome(error)) return Effect.fail(error.value);
+					return Effect.failCause(failure.cause);
+				}
+				return Effect.void;
+			}),
+		);
 		return externalSignal ? yield* Effect.raceFirst(runWave, awaitAbort(externalSignal)) : yield* runWave;
 	});
 
@@ -155,15 +163,18 @@ export function runWaveScheduler<T extends SchedulerTask>(
 	run: (task: T, index: number, signal: AbortSignal) => Promise<void>,
 	signal?: AbortSignal,
 ): Promise<{ skipped: SkippedTask[] }> {
-	return Effect.runPromise(runWaveSchedulerEffect(
-		tasks,
-		concurrency,
-		outputs,
-		settled,
-		(task, index, workerSignal) => Effect.tryPromise({
-			try: () => run(task, index, workerSignal),
-			catch: (error) => error,
-		}),
-		signal,
-	));
+	return Effect.runPromise(
+		runWaveSchedulerEffect(
+			tasks,
+			concurrency,
+			outputs,
+			settled,
+			(task, index, workerSignal) =>
+				Effect.tryPromise({
+					try: () => run(task, index, workerSignal),
+					catch: (error) => error,
+				}),
+			signal,
+		),
+	);
 }

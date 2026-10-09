@@ -9,7 +9,7 @@
     "agent-skills"
   ],
   "license": "MIT",
-  "author": "arhen <arhen@users.noreply.github.com>",
+  "author": "Pi Atelier contributors",
   "repository": {
     "type": "git",
     "url": "https://github.com/lksxyz/pi-atelier",
@@ -29,6 +29,9 @@
     "extensions": [
       "./src/index.ts"
     ]
+  },
+  "dependencies": {
+    "effect": "^4.0.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

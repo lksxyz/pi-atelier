@@ -1,8 +1,8 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { Effect } from "effect";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { Effect } from "effect";
 
 export const CONFIG_FILE_NAME = "deliberate.json";
 export const DEFAULT_PLAN_PATH = "PLAN.md";
@@ -80,10 +80,10 @@ export function validatePlanMarkdown(markdown: string): string | null {
 	return markdown.trim().length > 0 ? null : "plan markdown is empty";
 }
 
-export const atomicWriteFile = Effect.fnUntraced(function*(path: string, content: string) {
+export const atomicWriteFile = Effect.fnUntraced(function* (path: string, content: string) {
 	yield* Effect.tryPromise({ try: () => mkdir(dirname(path), { recursive: true }), catch: (error) => error });
 	const tempPath = `${path}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-	return yield* Effect.gen(function*() {
+	return yield* Effect.gen(function* () {
 		yield* Effect.tryPromise({ try: () => writeFile(tempPath, content, "utf8"), catch: (error) => error });
 		yield* Effect.tryPromise({ try: () => rename(tempPath, path), catch: (error) => error });
 	}).pipe(
@@ -163,7 +163,7 @@ export function parseConfig(raw: unknown): ParseResult<DeliberateConfig> {
 	return { value: config };
 }
 
-export const loadConfig = Effect.fnUntraced(function*(agentDir: string) {
+export const loadConfig = Effect.fnUntraced(function* (agentDir: string) {
 	const path = configFilePath(agentDir);
 	const result = yield* Effect.tryPromise({
 		try: () => readFile(path, "utf8"),
@@ -193,13 +193,13 @@ export const loadConfig = Effect.fnUntraced(function*(agentDir: string) {
 	return { config: parsed.value, path };
 });
 
-export const saveConfig = Effect.fnUntraced(function*(agentDir: string, config: DeliberateConfig) {
+export const saveConfig = Effect.fnUntraced(function* (agentDir: string, config: DeliberateConfig) {
 	const path = configFilePath(agentDir);
 	yield* atomicWriteFile(path, `${JSON.stringify(config, null, "\t")}\n`);
 	return path;
 });
 
-export const clearConfig = Effect.fnUntraced(function*(agentDir: string) {
+export const clearConfig = Effect.fnUntraced(function* (agentDir: string) {
 	yield* Effect.tryPromise({ try: () => rm(configFilePath(agentDir), { force: true }), catch: (error) => error });
 });
 

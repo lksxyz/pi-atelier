@@ -8,7 +8,7 @@
     "test": "bun test"
   },
   "license": "MIT",
-  "author": "arhen",
+  "author": "Pi Atelier contributors",
   "repository": {
     "type": "git",
     "url": "https://github.com/lksxyz/pi-atelier",
@@ -27,6 +27,9 @@
     "pi-package",
     "todo"
   ],
+  "dependencies": {
+    "effect": "^4.0.1"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
