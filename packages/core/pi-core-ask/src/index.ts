@@ -4,7 +4,8 @@
  * no lifecycle events, no RPC fallback, no config — one tool, one dialog.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Effect } from "effect";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { QuestionnaireComponent } from "./ui.ts";
 import { buildQuestionnaireResponse, buildToolResult, validateQuestionnaire } from "./response.ts";
 import { MAX_OPTIONS, MAX_QUESTIONS, MIN_OPTIONS, QuestionParamsSchema, type QuestionParams, type QuestionnaireResult } from "./types.ts";
@@ -34,6 +35,25 @@ Use the optional \`preview\` field on options when presenting concrete artifacts
 Preview content is rendered as plain text in a pane below the option list (multi-line supported). Do not use previews for simple preference questions where labels and descriptions suffice. Note: previews are only supported for single-select questions (not multiSelect).`;
 
 const DEFAULT_PROMPT_SNIPPET = `Ask the user up to ${MAX_QUESTIONS} structured questions (${MIN_OPTIONS}-${MAX_OPTIONS} options each) when requirements are ambiguous`;
+const runQuestionnaire = Effect.fnUntraced(function* (params: QuestionParams, ctx: ExtensionContext) {
+	if (ctx.mode !== "tui") {
+		return buildToolResult(ERROR_NO_UI, { answers: [], cancelled: true, error: "no_ui" });
+	}
+	const validation = validateQuestionnaire(params);
+	if (!validation.ok) {
+		return buildToolResult(validation.message, { answers: [], cancelled: true, error: validation.error });
+	}
+
+	const result = yield* Effect.promise(() => ctx.ui.custom<QuestionnaireResult>(
+		(tui, theme, _keybindings, done) =>
+			new QuestionnaireComponent(params.questions, tui, theme, (r) =>
+				done({ answers: r.answers, cancelled: r.cancelled }),
+			),
+	));
+
+	return buildQuestionnaireResponse(result ?? null, params);
+});
+
 const DEFAULT_PROMPT_GUIDELINES: string[] = [
 	`Use ask_user_question whenever the user's request is underspecified and you cannot proceed without concrete decisions — you can ask up to ${MAX_QUESTIONS} questions per invocation.`,
 	`Each question MUST have ${MIN_OPTIONS}-${MAX_OPTIONS} options. Every option requires a concise label (1-5 words) and a description explaining what the choice means or its trade-offs. The user can additionally type a custom answer via the automatically appended "Type something." row on every question, or press Esc to abandon the questionnaire. Do NOT author "Other" or "Type something." labels yourself — reserved labels are rejected at runtime.`,
@@ -50,24 +70,8 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: DEFAULT_PROMPT_GUIDELINES,
 		parameters: QuestionParamsSchema,
 		executionMode: "sequential",
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const typed: QuestionParams = params;
-			if (ctx.mode !== "tui") {
-				return buildToolResult(ERROR_NO_UI, { answers: [], cancelled: true, error: "no_ui" });
-			}
-			const validation = validateQuestionnaire(typed);
-			if (!validation.ok) {
-				return buildToolResult(validation.message, { answers: [], cancelled: true, error: validation.error });
-			}
-
-			const result = await ctx.ui.custom<QuestionnaireResult>(
-				(tui, theme, _keybindings, done) =>
-					new QuestionnaireComponent(typed.questions, tui, theme, (r) =>
-						done({ answers: r.answers, cancelled: r.cancelled }),
-					),
-			);
-
-			return buildQuestionnaireResponse(result ?? null, typed);
+		execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return Effect.runPromise(runQuestionnaire(params, ctx));
 		},
 	});
 }

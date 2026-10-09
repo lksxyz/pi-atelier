@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Effect } from "effect";
 
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -540,40 +541,42 @@ export default function goalExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	function reconstructState(ctx: ExtensionContext): void {
-		goal = null;
-		activeSinceMs = null;
-		activeGoalIdAtAgentStart = null;
-		continuationQueued = false;
-		abortedAtAgentEnd = false;
+	function reconstructState(ctx: ExtensionContext): Effect.Effect<void> {
+		return Effect.sync(() => {
+			goal = null;
+			activeSinceMs = null;
+			activeGoalIdAtAgentStart = null;
+			continuationQueued = false;
+			abortedAtAgentEnd = false;
 
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type !== "custom" || entry.customType !== STATE_TYPE) continue;
-			const data = entry.data as Partial<PersistedGoalState> | undefined;
-			goal = normalizeGoal(data?.goal);
-		}
-		if (goal?.status === "active") {
-			activeSinceMs = Date.now();
-		}
-		updateStatus(ctx);
+			for (const entry of ctx.sessionManager.getBranch()) {
+				if (entry.type !== "custom" || entry.customType !== STATE_TYPE) continue;
+				const data = entry.data as Partial<PersistedGoalState> | undefined;
+				goal = normalizeGoal(data?.goal);
+			}
+			if (goal?.status === "active") {
+				activeSinceMs = Date.now();
+			}
+			updateStatus(ctx);
+		});
 	}
 
-	pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
-	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
+	pi.on("session_start", (_event, ctx) => Effect.runPromise(reconstructState(ctx)));
+	pi.on("session_tree", (_event, ctx) => Effect.runPromise(reconstructState(ctx)));
 
-	pi.on("before_agent_start", async (event) => {
-		if (!goal || goal.status !== "active") return;
+	pi.on("before_agent_start", (event) => Effect.runPromise(Effect.sync(() => {
+		if (!goal || goal.status !== "active") return undefined;
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${activeGoalSystemPrompt(goal)}`,
 		};
-	});
+	})));
 
-	pi.on("agent_start", async (_event, _ctx) => {
+	pi.on("agent_start", (_event, _ctx) => Effect.runPromise(Effect.sync(() => {
 		continuationQueued = false;
 		activeGoalIdAtAgentStart = goal?.status === "active" ? goal.id : null;
-	});
+	})));
 
-	pi.on("agent_end", async (event, ctx) => {
+	pi.on("agent_end", (event, ctx) => Effect.runPromise(Effect.gen(function* () {
 		abortedAtAgentEnd = false;
 		if (!goal) return;
 		let changed = false;
@@ -619,9 +622,9 @@ export default function goalExtension(pi: ExtensionAPI) {
 			}
 			abortedAtAgentEnd = true;
 		}
-	});
+	})));
 
-	pi.on("agent_settled", async (_event, ctx) => {
+	pi.on("agent_settled", (_event, ctx) => Effect.runPromise(Effect.gen(function* () {
 		if (!goal || goal.status !== "active") {
 			abortedAtAgentEnd = false;
 			return;
@@ -629,7 +632,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 		if (abortedAtAgentEnd) {
 			abortedAtAgentEnd = false;
 			const pause = ctx.hasUI
-				? await ctx.ui.confirm("Pause active goal?", "Operation aborted. Pause this goal instead of automatically continuing?")
+				? yield* Effect.promise(() => ctx.ui.confirm("Pause active goal?", "Operation aborted. Pause this goal instead of automatically continuing?"))
 				: true;
 			if (pause) {
 				setGoalStatus("paused");
@@ -640,9 +643,9 @@ export default function goalExtension(pi: ExtensionAPI) {
 			}
 		}
 		queueContinuation(ctx);
-	});
+	})));
 
-	pi.on("context", async (event) => {
+	pi.on("context", (event) => Effect.runPromise(Effect.sync(() => {
 		let lastContinuationIndex = -1;
 		for (let i = 0; i < event.messages.length; i++) {
 			const msg = event.messages[i] as { customType?: string; details?: { goalId?: string } };
@@ -661,7 +664,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 				return true;
 			}),
 		};
-	});
+	})));
 
 	pi.registerCommand("goal", {
 		description: "Set or view the goal for a long-running task",
@@ -675,7 +678,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 			const filtered = items.filter((item) => item.value.startsWith(prefix.trimStart()));
 			return filtered.length > 0 ? filtered : null;
 		},
-		handler: async (args, ctx) => {
+		handler: (args, ctx) => Effect.runPromise(Effect.gen(function* () {
 			const trimmed = args.trim();
 			if (!trimmed) {
 				const snapshot = currentGoalSnapshot();
@@ -724,7 +727,8 @@ export default function goalExtension(pi: ExtensionAPI) {
 						showGoalMessage("/goal edit requires interactive mode. Use /goal <objective> to replace the current goal.");
 						return;
 					}
-					const edited = await ctx.ui.editor("Edit goal objective:", goal.objective);
+					const currentObjective = goal.objective;
+					const edited = yield* Effect.promise(() => ctx.ui.editor("Edit goal objective:", currentObjective));
 					if (edited === undefined) {
 						ctx.ui.notify("Goal edit cancelled", "info");
 						return;
@@ -755,7 +759,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 					showGoalMessage("An unfinished goal already exists. Run /goal clear first, or use interactive mode to confirm replacement.");
 					return;
 				}
-				const replace = await ctx.ui.confirm("Replace goal?", `New objective: ${objective}`);
+				const replace = yield* Effect.promise(() => ctx.ui.confirm("Replace goal?", `New objective: ${objective}`));
 				if (!replace) return;
 			}
 
@@ -764,7 +768,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 			showGoalMessage(`Goal active\n\n${goalSummary(goal!)}`);
 			updateStatus(ctx);
 			queueContinuation(ctx);
-		},
+		})),
 	});
 
 	pi.registerTool({
@@ -774,13 +778,15 @@ export default function goalExtension(pi: ExtensionAPI) {
 			"Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
 		promptSnippet: "Get the current long-running thread goal and its usage/budget state",
 		parameters: Type.Object({}),
-		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			const snapshot = currentGoalSnapshot();
-			const response = goalResponse(snapshot, ctx.sessionManager.getSessionId());
-			return {
-				content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
-				details: response,
-			};
+		execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			return Effect.runPromise(Effect.sync(() => {
+				const snapshot = currentGoalSnapshot();
+				const response = goalResponse(snapshot, ctx.sessionManager.getSessionId());
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }],
+					details: response,
+				};
+			}));
 		},
 	});
 
@@ -796,22 +802,24 @@ export default function goalExtension(pi: ExtensionAPI) {
 			"Use update_goal with status blocked only when the strict blocked audit is satisfied.",
 		],
 		parameters: CreateGoalParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (goal && isUnfinishedGoal(goal)) {
-				throw new Error(
-					"cannot create a new goal because this thread already has an unfinished goal; complete it with update_goal or ask the user to clear or replace it",
-				);
-			}
-			setGoal(params.objective, params.token_budget);
-			persist("set");
-			updateStatus(ctx);
-			showGoalMessage(`Goal active\n\n${goalSummary(goal!)}`);
-			queueContinuation(ctx);
-			const response = goalResponse(currentGoalSnapshot(), ctx.sessionManager.getSessionId());
-			return {
-				content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
-				details: response,
-			};
+		execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return Effect.runPromise(Effect.sync(() => {
+				if (goal && isUnfinishedGoal(goal)) {
+					throw new Error(
+						"cannot create a new goal because this thread already has an unfinished goal; complete it with update_goal or ask the user to clear or replace it",
+					);
+				}
+				setGoal(params.objective, params.token_budget);
+				persist("set");
+				updateStatus(ctx);
+				showGoalMessage(`Goal active\n\n${goalSummary(goal!)}`);
+				queueContinuation(ctx);
+				const response = goalResponse(currentGoalSnapshot(), ctx.sessionManager.getSessionId());
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }],
+					details: response,
+				};
+			}));
 		},
 	});
 
@@ -825,20 +833,22 @@ export default function goalExtension(pi: ExtensionAPI) {
 			"Use update_goal only to mark the active goal complete or blocked after verifying the required conditions; never use it for pause, resume, budget-limit, or usage-limit changes.",
 		],
 		parameters: UpdateGoalParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (params.status !== "complete" && params.status !== "blocked") {
-				throw new Error(
-					"update_goal can only mark the existing goal complete or blocked; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system",
-				);
-			}
-			setGoalStatus(params.status);
-			persist("status");
-			updateStatus(ctx);
-			const response = goalResponse(currentGoalSnapshot(), ctx.sessionManager.getSessionId(), params.status === "complete");
-			return {
-				content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
-				details: response,
-			};
+		execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return Effect.runPromise(Effect.sync(() => {
+				if (params.status !== "complete" && params.status !== "blocked") {
+					throw new Error(
+						"update_goal can only mark the existing goal complete or blocked; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system",
+					);
+				}
+				setGoalStatus(params.status);
+				persist("status");
+				updateStatus(ctx);
+				const response = goalResponse(currentGoalSnapshot(), ctx.sessionManager.getSessionId(), params.status === "complete");
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }],
+					details: response,
+				};
+			}));
 		},
 	});
 }

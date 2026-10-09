@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { TodoOverlay } from "./overlay.ts";
 import { applyTaskMutation, buildToolResult, sanitizeTerminalText } from "./state.ts";
@@ -58,13 +59,15 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: DEFAULT_PROMPT_GUIDELINES,
 		parameters: TodoParamsSchema,
 		executionMode: "sequential",
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const typed = params as unknown as TaskMutationParams;
-			const action = typed.action as TaskAction;
-			const sessionId = sid(ctx);
-			const result = applyTaskMutation(getState(sessionId), action, typed);
-			if (action !== "list" && action !== "get" && result.op.kind !== "error") commitState(sessionId, result.state);
-			return buildToolResult(action, typed, result.state, result.op);
+		execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return Effect.runPromise(Effect.gen(function* () {
+				const typed = params as unknown as TaskMutationParams;
+				const action = typed.action as TaskAction;
+				const sessionId = sid(ctx);
+				const result = applyTaskMutation(getState(sessionId), action, typed);
+				if (action !== "list" && action !== "get" && result.op.kind !== "error") yield* commitState(sessionId, result.state);
+				return buildToolResult(action, typed, result.state, result.op);
+			}));
 		},
 		renderCall(args, theme, context) {
 			return new BoundedLines(() => {
@@ -95,45 +98,45 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand(COMMAND_NAME, {
 		description: "Browse the todo tree: scroll, expand, and collapse branches",
-		handler: async (_args, ctx) => {
+		handler: (_args, ctx) => Effect.runPromise(Effect.gen(function* () {
 			if (!ctx.hasUI) return;
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("/todos tree browser requires interactive mode", "info");
 				return;
 			}
 			const sessionId = sid(ctx);
-			await ctx.ui.custom<void>((tui, theme, _kb, done) => new TodoViewer(tui, theme, () => getState(sessionId), done), {
+			yield* Effect.promise(() => ctx.ui.custom<void>((tui, theme, _kb, done) => new TodoViewer(tui, theme, () => getState(sessionId), done), {
 				overlay: true,
 				overlayOptions: { anchor: "center", width: "90%", maxHeight: "70%", margin: 0 },
-			});
-		},
+			}));
+		})),
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", (_event, ctx) => Effect.runPromise(Effect.gen(function* () {
 		const id = sid(ctx);
-		restoreSession(id);
+		yield* restoreSession(id);
 		if (ctx.mode !== "tui") return;
 		if (getActiveRenderSession() === "" || !hasSession(getActiveRenderSession())) setActiveRenderSession(id);
 		if (id !== getActiveRenderSession()) return;
 		overlay.setUICtx(ctx.ui);
 		refreshOverlay(true);
-	});
+	})));
 
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", (_event, ctx) => Effect.runPromise(Effect.gen(function* () {
 		const sessionId = sid(ctx);
 		if (!sessionId) return;
-		schedulePersist();
+		yield* schedulePersist();
 		if (sessionId === getActiveRenderSession()) {
 			overlay.dispose();
 			clearActiveRenderSession();
 		}
-	});
+	})));
 
-	pi.on("tool_execution_end", async (event) => {
+	pi.on("tool_execution_end", (event) => Effect.runPromise(Effect.sync(() => {
 		if (event.toolName === TOOL_NAME && !event.isError) refreshOverlay();
-	});
+	})));
 
-	pi.on("agent_start", async (_event, ctx) => {
+	pi.on("agent_start", (_event, ctx) => Effect.runPromise(Effect.sync(() => {
 		if (sid(ctx) === getActiveRenderSession()) overlay.hideCompletedTasksFromPreviousTurn();
-	});
+	})));
 }

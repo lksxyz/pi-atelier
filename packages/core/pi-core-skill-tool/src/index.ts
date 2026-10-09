@@ -17,8 +17,9 @@
  * is stripped and the shared skill list is left untouched for `/skill:name`.
  */
 
+import { Effect } from "effect";
 import { parseFrontmatter, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { Type } from "typebox";
 
 const CATALOG_DESC_MAX = 100;
@@ -55,14 +56,19 @@ function truncateDescription(desc: string): string {
 	return desc.slice(0, CATALOG_DESC_MAX).trimEnd() + "…";
 }
 
-function readSkillBody(filePath: string): string {
-	try {
-		const content = readFileSync(filePath, "utf8");
-		const { body } = parseFrontmatter<Record<string, unknown>>(content);
-		return body.trim(); // L1: never leak frontmatter to the model
-	} catch (err) {
-		return `Skill file unreadable: ${filePath} (${err instanceof Error ? err.message : String(err)})`;
-	}
+function readSkillBody(filePath: string) {
+	return Effect.tryPromise({
+		try: async () => {
+			const content = await readFile(filePath, "utf8");
+			const { body } = parseFrontmatter<Record<string, unknown>>(content);
+			return body.trim();
+		},
+		catch: (error) => error,
+	}).pipe(
+		Effect.catch((error) =>
+			Effect.succeed(`Skill file unreadable: ${filePath} (${error instanceof Error ? error.message : String(error)})`),
+		),
+	);
 }
 
 /**
@@ -95,7 +101,7 @@ function warnCatalogRemains(): void {
 	);
 }
 
-export default async function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI) {
 	let catalog: SkillEntry[] = [];
 	let toolRegistered = false;
 
@@ -149,6 +155,26 @@ export default async function (pi: ExtensionAPI) {
 	// Set PI_SKILL_TOOL=0 to disable the tool (catalog stripped, no tool —
 	// skills only usable via pi's built-in /skill:name commands).
 	function registerSkillTool() {
+		const executeSkill = Effect.fnUntraced(function* (name: string) {
+			const skill = catalog.find((s) => !s.disableModelInvocation && s.name === name);
+			if (!skill) {
+				return {
+					content: [{ type: "text" as const, text: `Skill "${name}" not found. Available skills: ${catalog.filter((s) => !s.disableModelInvocation).map((s) => s.name).join(", ") || "(none)"}` }],
+					details: {},
+				};
+			}
+			if (!skill.filePath) {
+				return {
+					content: [{ type: "text" as const, text: `Skill "${skill.name}" has no loadable file path in this context.` }],
+					details: {},
+				};
+			}
+			const body = yield* readSkillBody(skill.filePath);
+			return {
+				content: [{ type: "text" as const, text: `## Skill: ${skill.name}\n\n**Base directory**: ${skill.baseDir}\n\n${body}` }],
+				details: {},
+			};
+		});
 		pi.registerTool({
 			name: "skill",
 			label: "Skill",
@@ -169,42 +195,8 @@ export default async function (pi: ExtensionAPI) {
 			parameters: Type.Object({
 				name: Type.String({ description: "The skill identifier from available_skills" }),
 			}),
-			async execute(_toolCallId: string, params: { name?: unknown }, _signal: AbortSignal | undefined, _onUpdate: AgentToolUpdateCallback<unknown> | undefined, _ctx: ExtensionContext): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
-				const name = typeof params.name === "string" ? params.name : "";
-				const skill = catalog.find((s) => !s.disableModelInvocation && s.name === name);
-				if (!skill) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Skill "${name}" not found. Available skills: ${catalog.filter((s) => !s.disableModelInvocation).map((s) => s.name).join(", ") || "(none)"}`,
-							},
-						],
-						details: {},
-					};
-				}
-				if (!skill.filePath) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Skill "${skill.name}" has no loadable file path in this context.`,
-							},
-						],
-						details: {},
-					};
-				}
-				const body = readSkillBody(skill.filePath);
-				const dir = skill.baseDir;
-				return {
-					content: [
-						{
-							type: "text",
-							text: `## Skill: ${skill.name}\n\n**Base directory**: ${dir}\n\n${body}`,
-						},
-					],
-					details: {},
-				};
+			execute(_toolCallId: string, params: { name?: unknown }, _signal: AbortSignal | undefined, _onUpdate: AgentToolUpdateCallback<unknown> | undefined, _ctx: ExtensionContext) {
+				return Effect.runPromise(executeSkill(typeof params.name === "string" ? params.name : ""));
 			},
 		});
 	}
