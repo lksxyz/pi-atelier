@@ -10,6 +10,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { Effect } from "effect";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -86,13 +87,13 @@ function subagentToolState(pi: ExtensionAPI): "ok" | "missing" | "inactive" {
 	return pi.getActiveTools().includes("subagent") ? "ok" : "inactive";
 }
 
-async function prepareMode(
+const prepareMode = Effect.fnUntraced(function*(
 	pi: ExtensionAPI,
 	mode: DeliberateMode,
 	ctx: ExtensionContext,
 	signal: AbortSignal | undefined,
-): Promise<DeliberateStatus> {
-	const loaded = await loadConfig(getAgentDir());
+): Effect.fn.Return<DeliberateStatus> {
+	const loaded = yield* loadConfig(getAgentDir());
 	const modeConfig = mode === "advise" ? loaded.config?.advise : loaded.config?.plan;
 	if (!modeConfig) {
 		return {
@@ -142,28 +143,22 @@ async function prepareMode(
 	const thinking = resolveThinkingLevel(model, modeConfig.thinking);
 	const tools = filterTools(mode, modeConfig.tools);
 
-	try {
-		const response = await ctx.modelRegistry.complete(
-			model,
-			{ messages: [{ role: "user", content: [{ type: "text", text: "ping" }], timestamp: Date.now() }] },
-			{ maxTokens: 16, signal },
-		);
-		if (response.stopReason === "error" || response.stopReason === "aborted") {
-			const message = response.errorMessage ?? `preflight failed (${response.stopReason})`;
-			if (!isInconclusivePreflight(model.provider, message)) {
-				return {
-					status: "model-unavailable",
-					mode,
-					reason: "preflight-failed",
-					model: ref,
-					thinking,
-					tools,
-					message,
-				};
-			}
-		}
-	} catch (error) {
-		const message = errorText(error);
+	const preflight = yield* Effect.tryPromise({
+		try: () =>
+			ctx.modelRegistry.complete(
+				model,
+				{ messages: [{ role: "user", content: [{ type: "text", text: "ping" }], timestamp: Date.now() }] },
+				{ maxTokens: 16, signal },
+			),
+		catch: (error) => error,
+	}).pipe(
+		Effect.match({
+			onFailure: (error) => ({ error }),
+			onSuccess: (response) => ({ response }),
+		}),
+	);
+	if ("error" in preflight) {
+		const message = errorText(preflight.error);
 		if (!isInconclusivePreflight(model.provider, message)) {
 			return {
 				status: "model-unavailable",
@@ -173,6 +168,19 @@ async function prepareMode(
 				thinking,
 				tools,
 				message: `preflight failed: ${message}`,
+			};
+		}
+	} else if (preflight.response.stopReason === "error" || preflight.response.stopReason === "aborted") {
+		const message = preflight.response.errorMessage ?? `preflight failed (${preflight.response.stopReason})`;
+		if (!isInconclusivePreflight(model.provider, message)) {
+			return {
+				status: "model-unavailable",
+				mode,
+				reason: "preflight-failed",
+				model: ref,
+				thinking,
+				tools,
+				message,
 			};
 		}
 	}
@@ -188,15 +196,15 @@ async function prepareMode(
 	};
 	if (mode === "plan") status.path = resolvePlanPath((modeConfig as DeliberatePlanConfig).path, ctx.cwd);
 	return status;
-}
+});
 
 function cancelledStatus(mode: DeliberateMode, config: DeliberateModeConfig | DeliberatePlanConfig): DeliberateStatus {
 	return { status: "cancelled", mode, config, message: "configuration unchanged" };
 }
 
-async function configureMode(mode: DeliberateMode, ctx: ExtensionContext): Promise<DeliberateStatus> {
+const configureMode = Effect.fnUntraced(function*(mode: DeliberateMode, ctx: ExtensionContext): Effect.fn.Return<DeliberateStatus, unknown> {
 	const agentDir = getAgentDir();
-	const loaded = await loadConfig(agentDir);
+	const loaded = yield* loadConfig(agentDir);
 	const existing: DeliberateModeConfig | DeliberatePlanConfig =
 		(mode === "advise" ? loaded.config?.advise : loaded.config?.plan) ?? {};
 
@@ -217,7 +225,8 @@ async function configureMode(mode: DeliberateMode, ctx: ExtensionContext): Promi
 			label: ref === currentRef ? `${ref} (current)` : ref,
 		};
 	});
-	const modelChoice = await ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+	const modelChoice = yield* Effect.tryPromise({
+		try: () => ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
 		const input = new Input({ placeholder: "type to filter models" });
 		input.focused = true;
 		let list!: SelectList;
@@ -296,6 +305,8 @@ async function configureMode(mode: DeliberateMode, ctx: ExtensionContext): Promi
 				return result;
 			},
 		};
+		}),
+		catch: (error) => error,
 	});
 	if (modelChoice === undefined) return cancelledStatus(mode, existing);
 	const model = models.find((candidate) => modelRef(candidate) === modelChoice);
@@ -303,25 +314,36 @@ async function configureMode(mode: DeliberateMode, ctx: ExtensionContext): Promi
 
 	const levels = supportedThinkingLevels(model);
 	const thinkingLabels = levels.map((level) => `${level}${level === existing.thinking ? " (current)" : ""}`);
-	const thinkingChoice = await ctx.ui.select(`Deliberate ${mode}: thinking level`, thinkingLabels);
+	const thinkingChoice = yield* Effect.tryPromise({
+		try: () => ctx.ui.select(`Deliberate ${mode}: thinking level`, thinkingLabels),
+		catch: (error) => error,
+	});
 	if (thinkingChoice === undefined) return cancelledStatus(mode, existing);
 	const thinking = levels[thinkingLabels.indexOf(thinkingChoice)] ?? resolveThinkingLevel(model, existing.thinking);
 
 	const tools = filterTools(mode, existing.tools);
-	const toolsText = await ctx.ui.editor(
-		`Deliberate ${mode}: tools (comma-separated; allowed: ${allowedTools(mode).join(", ")})`,
-		tools.join(", "),
-	);
+	const toolsText = yield* Effect.tryPromise({
+		try: () =>
+			ctx.ui.editor(
+				`Deliberate ${mode}: tools (comma-separated; allowed: ${allowedTools(mode).join(", ")})`,
+				tools.join(", "),
+			),
+		catch: (error) => error,
+	});
 	if (toolsText === undefined) return cancelledStatus(mode, existing);
 	const nextTools = filterTools(mode, toolsText.split(/[\s,]+/).filter(Boolean));
 
 	let path: string | undefined;
 	if (mode === "plan") {
 		const planConfig = existing as DeliberatePlanConfig;
-		const pathText = await ctx.ui.editor(
-			"Deliberate plan: output path (relative to cwd, ~/, or absolute)",
-			planConfig.path ?? DEFAULT_PLAN_PATH,
-		);
+		const pathText = yield* Effect.tryPromise({
+			try: () =>
+				ctx.ui.editor(
+					"Deliberate plan: output path (relative to cwd, ~/, or absolute)",
+					planConfig.path ?? DEFAULT_PLAN_PATH,
+				),
+			catch: (error) => error,
+		});
 		if (pathText === undefined) return cancelledStatus(mode, existing);
 		path = pathText.trim() || DEFAULT_PLAN_PATH;
 	}
@@ -333,7 +355,7 @@ async function configureMode(mode: DeliberateMode, ctx: ExtensionContext): Promi
 		...(path ? { path } : {}),
 	};
 	const nextConfig: DeliberateConfig = { ...(loaded.config ?? {}), [mode]: nextModeConfig };
-	const configPath = await saveConfig(agentDir, nextConfig);
+	const configPath = yield* saveConfig(agentDir, nextConfig);
 	return {
 		status: "configured",
 		mode,
@@ -346,7 +368,7 @@ async function configureMode(mode: DeliberateMode, ctx: ExtensionContext): Promi
 		configPath,
 		config: nextModeConfig,
 	};
-}
+});
 
 function refreshPlanUi(ctx: ExtensionContext): void {
 	const plan = latestPlanEntry(ctx.sessionManager.getBranch());
@@ -363,22 +385,29 @@ function refreshPlanUi(ctx: ExtensionContext): void {
 	ctx.ui.setStatus("deliberate-plan", theme.fg("accent", "plan"));
 }
 
-async function viewSavedPlan(ctx: ExtensionContext): Promise<void> {
+const viewSavedPlan = Effect.fnUntraced(function*(ctx: ExtensionContext) {
 	const plan = latestPlanEntry(ctx.sessionManager.getBranch());
 	if (!plan) {
 		ctx.ui.notify("No saved deliberate plan yet. Run /plan first.", "warning");
 		return;
 	}
 
-	let content: string;
-	try {
-		content = await readFile(plan.path, "utf8");
-	} catch {
+	const contentResult = yield* Effect.tryPromise({
+		try: () => readFile(plan.path, "utf8"),
+		catch: () => undefined,
+	}).pipe(
+		Effect.match({
+			onFailure: () => ({ missing: true as const }),
+			onSuccess: (content) => ({ content }),
+		}),
+	);
+	if ("missing" in contentResult) {
 		ctx.ui.notify(`Plan file not found: ${plan.path}`, "warning");
 		return;
 	}
+	const content = contentResult.content;
 
-	const loaded = await loadConfig(getAgentDir());
+	const loaded = yield* loadConfig(getAgentDir());
 	const configuredPath = resolvePlanPath(loaded.config?.plan?.path, ctx.cwd);
 	const warning =
 		plan.path !== configuredPath
@@ -390,24 +419,28 @@ async function viewSavedPlan(ctx: ExtensionContext): Promise<void> {
 		return;
 	}
 
-	await ctx.ui.custom<void>(
-		(tui, theme, _keybindings, done) =>
-			new PlanViewer({
-				tui,
-				theme,
-				markdownTheme: getMarkdownTheme(),
-				title: "Deliberate plan",
-				path: plan.path,
-				content,
-				warning,
-				onClose: () => done(undefined),
-			}),
-		{ overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" } },
-	);
-}
+	yield* Effect.tryPromise({
+		try: () =>
+			ctx.ui.custom<void>(
+				(tui, theme, _keybindings, done) =>
+					new PlanViewer({
+						tui,
+						theme,
+						markdownTheme: getMarkdownTheme(),
+						title: "Deliberate plan",
+						path: plan.path,
+						content,
+						warning,
+						onClose: () => done(undefined),
+					}),
+				{ overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" } },
+			),
+		catch: (error) => error,
+	});
+});
 
-async function showStatus(ctx: ExtensionContext): Promise<void> {
-	const loaded = await loadConfig(getAgentDir());
+const showStatus = Effect.fnUntraced(function*(ctx: ExtensionContext) {
+	const loaded = yield* loadConfig(getAgentDir());
 	const lines = [`Deliberate config: ${loaded.path}`];
 	if (loaded.error) lines.push(`invalid: ${loaded.error}`);
 	for (const mode of ["advise", "plan"] as const) {
@@ -428,7 +461,7 @@ async function showStatus(ctx: ExtensionContext): Promise<void> {
 		lines.push(`${mode}: ${parts.join(" ")}`);
 	}
 	ctx.ui.notify(lines.join("\n"), loaded.error ? "warning" : "info");
-}
+});
 
 function notifyConfigureResult(ctx: ExtensionContext, result: DeliberateStatus): void {
 	if (result.status === "configured") {
@@ -452,34 +485,44 @@ function notifyConfigureResult(ctx: ExtensionContext, result: DeliberateStatus):
 
 const CONFIG_USAGE = "Usage: /deliberate-config [advise|plan|status|clear [advise|plan]]";
 
-async function configureModeWithNotify(mode: DeliberateMode, ctx: ExtensionContext): Promise<void> {
-	try {
-		notifyConfigureResult(ctx, await configureMode(mode, ctx));
-	} catch (error) {
-		ctx.ui.notify(`Configure failed: ${errorText(error)}`, "error");
-	}
-}
+const configureModeWithNotify = Effect.fnUntraced(function*(mode: DeliberateMode, ctx: ExtensionContext) {
+	const result = yield* configureMode(mode, ctx).pipe(
+		Effect.match({
+			onFailure: (error) => ({ error }),
+			onSuccess: (status) => ({ status }),
+		}),
+	);
+	if ("error" in result) ctx.ui.notify(`Configure failed: ${errorText(result.error)}`, "error");
+	else notifyConfigureResult(ctx, result.status);
+});
 
-async function clearModeWithNotify(mode: DeliberateMode, ctx: ExtensionContext): Promise<void> {
-	try {
+const clearModeWithNotify = Effect.fnUntraced(function*(mode: DeliberateMode, ctx: ExtensionContext) {
+	const result = yield* Effect.gen(function*() {
 		const agentDir = getAgentDir();
-		const next = clearMode((await loadConfig(agentDir)).config, mode);
+		const next = clearMode((yield* loadConfig(agentDir)).config, mode);
 		if (!next) {
-			await clearConfig(agentDir);
-			ctx.ui.notify(`Cleared deliberate ${mode} mode; config is empty, removed ${CONFIG_FILE_NAME}.`, "info");
-			return;
+			yield* clearConfig(agentDir);
+			return `Cleared deliberate ${mode} mode; config is empty, removed ${CONFIG_FILE_NAME}.`;
 		}
-		await saveConfig(agentDir, next);
-		ctx.ui.notify(`Cleared deliberate ${mode} mode; the other mode is preserved.`, "info");
-	} catch (error) {
-		ctx.ui.notify(`Clear failed: ${errorText(error)}`, "error");
-	}
-}
+		yield* saveConfig(agentDir, next);
+		return `Cleared deliberate ${mode} mode; the other mode is preserved.`;
+	}).pipe(
+		Effect.match({
+			onFailure: (error) => ({ error }),
+			onSuccess: (message) => ({ message }),
+		}),
+	);
+	if ("error" in result) ctx.ui.notify(`Clear failed: ${errorText(result.error)}`, "error");
+	else ctx.ui.notify(result.message, "info");
+});
 
-async function chooseClearMode(ctx: ExtensionContext): Promise<DeliberateMode | undefined> {
-	const choice = await ctx.ui.select("Deliberate config: clear which mode?", ["advise", "plan"]);
+const chooseClearMode = Effect.fnUntraced(function*(ctx: ExtensionContext) {
+	const choice = yield* Effect.tryPromise({
+		try: () => ctx.ui.select("Deliberate config: clear which mode?", ["advise", "plan"]),
+		catch: (error) => error,
+	});
 	return choice === "advise" || choice === "plan" ? choice : undefined;
-}
+});
 
 function registerSkillDispatch(pi: ExtensionAPI, command: "advise" | "plan", skill: string, description: string): void {
 	pi.registerCommand(command, {
@@ -519,7 +562,7 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 			const items = values.map((value) => ({ value, label: value }));
 			return items.length > 0 ? items : null;
 		},
-		handler: async (args, ctx) => {
+		handler: (args, ctx) => Effect.runPromise(Effect.gen(function*() {
 			const tokens = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
 			const head = tokens[0] ?? "";
 			const tail = tokens[1];
@@ -528,18 +571,16 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(CONFIG_USAGE, "warning");
 					return;
 				}
-				const choice = await ctx.ui.select("Deliberate config", [
-					"Configure advise",
-					"Configure plan",
-					"Status",
-					"Clear mode",
-				]);
-				if (choice === "Configure advise") await configureModeWithNotify("advise", ctx);
-				else if (choice === "Configure plan") await configureModeWithNotify("plan", ctx);
-				else if (choice === "Status") await showStatus(ctx);
+				const choice = yield* Effect.tryPromise({
+					try: () => ctx.ui.select("Deliberate config", ["Configure advise", "Configure plan", "Status", "Clear mode"]),
+					catch: (error) => error,
+				});
+				if (choice === "Configure advise") yield* configureModeWithNotify("advise", ctx);
+				else if (choice === "Configure plan") yield* configureModeWithNotify("plan", ctx);
+				else if (choice === "Status") yield* showStatus(ctx);
 				else if (choice === "Clear mode") {
-					const mode = await chooseClearMode(ctx);
-					if (mode) await clearModeWithNotify(mode, ctx);
+					const mode = yield* chooseClearMode(ctx);
+					if (mode) yield* clearModeWithNotify(mode, ctx);
 				}
 				return;
 			}
@@ -548,7 +589,7 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(CONFIG_USAGE, "warning");
 					return;
 				}
-				await showStatus(ctx);
+				yield* showStatus(ctx);
 				return;
 			}
 			if (head === "advise" || head === "plan") {
@@ -556,38 +597,34 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(CONFIG_USAGE, "warning");
 					return;
 				}
-				await configureModeWithNotify(head, ctx);
+				yield* configureModeWithNotify(head, ctx);
 				return;
 			}
 			if (head === "clear") {
 				if (tail === "advise" || tail === "plan") {
-					await clearModeWithNotify(tail, ctx);
+					yield* clearModeWithNotify(tail, ctx);
 					return;
 				}
 				if (tail || !ctx.hasUI) {
 					ctx.ui.notify(CONFIG_USAGE, "warning");
 					return;
 				}
-				const mode = await chooseClearMode(ctx);
-				if (mode) await clearModeWithNotify(mode, ctx);
+				const mode = yield* chooseClearMode(ctx);
+				if (mode) yield* clearModeWithNotify(mode, ctx);
 				return;
 			}
 			ctx.ui.notify(CONFIG_USAGE, "warning");
-		},
+		})),
 	});
 
 	pi.registerCommand("plan-view", {
 		description: "View the saved deliberate plan",
-		handler: async (_args, ctx) => {
-			await viewSavedPlan(ctx);
-		},
+		handler: (_args, ctx) => Effect.runPromise(viewSavedPlan(ctx)),
 	});
 
 	pi.registerShortcut(Key.ctrlAlt("p"), {
 		description: "View the saved deliberate plan",
-		handler: async (ctx) => {
-			await viewSavedPlan(ctx);
-		},
+		handler: (ctx) => Effect.runPromise(viewSavedPlan(ctx)),
 	});
 
 	pi.registerTool({
@@ -606,7 +643,9 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 				description: "prepare validates readiness; configure opens the picker UI and saves config",
 			}),
 		}),
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			return Effect.runPromise(
+				Effect.gen(function*() {
 			if (params.action === "configure") {
 				if (!ctx.hasUI) {
 					return toolResult({
@@ -615,9 +654,11 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 						message: `configuration requires interactive UI; run /deliberate-config ${params.mode}`,
 					});
 				}
-				return toolResult(await configureMode(params.mode, ctx));
+				return toolResult(yield* configureMode(params.mode, ctx));
 			}
-			return toolResult(await prepareMode(pi, params.mode, ctx, signal ?? ctx.signal));
+			return toolResult(yield* prepareMode(pi, params.mode, ctx, signal ?? ctx.signal));
+				}),
+			);
 		},
 	});
 
@@ -634,8 +675,10 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 		parameters: Type.Object({
 			markdown: Type.String({ description: "Final standalone Markdown plan" }),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const loaded = await loadConfig(getAgentDir());
+		execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return Effect.runPromise(
+				Effect.gen(function*() {
+			const loaded = yield* loadConfig(getAgentDir());
 			const planConfig = loaded.config?.plan;
 			if (!planConfig) {
 				throw new Error(
@@ -645,8 +688,11 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 			const empty = validatePlanMarkdown(params.markdown);
 			if (empty) throw new Error(empty);
 			const path = resolvePlanPath(planConfig.path, ctx.cwd);
-			await withFileMutationQueue(path, async () => {
-				await atomicWriteFile(path, params.markdown.endsWith("\n") ? params.markdown : `${params.markdown}\n`);
+			yield* Effect.tryPromise({
+				try: () => withFileMutationQueue(path, () => Effect.runPromise(
+					atomicWriteFile(path, params.markdown.endsWith("\n") ? params.markdown : `${params.markdown}\n`),
+				)),
+				catch: (error) => error,
 			});
 			const savedAt = new Date().toISOString();
 			pi.appendEntry("deliberate-plan", { path, savedAt });
@@ -655,6 +701,8 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 				content: [{ type: "text" as const, text: `Saved plan to ${path}. View it with /plan-view (Ctrl+Alt+P).` }],
 				details: { path, savedAt },
 			};
+				}),
+			);
 		},
 	});
 

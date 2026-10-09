@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { Effect } from "effect";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -79,17 +80,20 @@ export function validatePlanMarkdown(markdown: string): string | null {
 	return markdown.trim().length > 0 ? null : "plan markdown is empty";
 }
 
-export async function atomicWriteFile(path: string, content: string): Promise<void> {
-	await mkdir(dirname(path), { recursive: true });
+export const atomicWriteFile = Effect.fnUntraced(function*(path: string, content: string) {
+	yield* Effect.tryPromise({ try: () => mkdir(dirname(path), { recursive: true }), catch: (error) => error });
 	const tempPath = `${path}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-	try {
-		await writeFile(tempPath, content, "utf8");
-		await rename(tempPath, path);
-	} catch (error) {
-		await rm(tempPath, { force: true }).catch(() => {});
-		throw error;
-	}
-}
+	return yield* Effect.gen(function*() {
+		yield* Effect.tryPromise({ try: () => writeFile(tempPath, content, "utf8"), catch: (error) => error });
+		yield* Effect.tryPromise({ try: () => rename(tempPath, path), catch: (error) => error });
+	}).pipe(
+		Effect.catch((error) =>
+			Effect.tryPromise({ try: () => rm(tempPath, { force: true }), catch: () => undefined }).pipe(
+				Effect.flatMap(() => Effect.fail(error)),
+			),
+		),
+	);
+});
 
 type ParseResult<T> = { value: T } | { error: string };
 
@@ -159,37 +163,45 @@ export function parseConfig(raw: unknown): ParseResult<DeliberateConfig> {
 	return { value: config };
 }
 
-export async function loadConfig(agentDir: string): Promise<LoadedConfig> {
+export const loadConfig = Effect.fnUntraced(function*(agentDir: string) {
 	const path = configFilePath(agentDir);
-	let text: string;
-	try {
-		text = await readFile(path, "utf8");
-	} catch (error) {
+	const result = yield* Effect.tryPromise({
+		try: () => readFile(path, "utf8"),
+		catch: (error) => error,
+	}).pipe(
+		Effect.match({
+			onFailure: (error) => ({ error }),
+			onSuccess: (text) => ({ text }),
+		}),
+	);
+	if ("error" in result) {
 		const code =
-			typeof error === "object" && error !== null && "code" in error ? (error as { code?: string }).code : undefined;
+			typeof result.error === "object" && result.error !== null && "code" in result.error
+				? (result.error as { code?: string }).code
+				: undefined;
 		if (code === "ENOENT") return { config: null, path };
-		return { config: null, path, error: `could not read config: ${errorText(error)}` };
+		return { config: null, path, error: `could not read config: ${errorText(result.error)}` };
 	}
 	let raw: unknown;
 	try {
-		raw = JSON.parse(text);
+		raw = JSON.parse(result.text);
 	} catch {
 		return { config: null, path, error: "config is not valid JSON" };
 	}
 	const parsed = parseConfig(raw);
 	if ("error" in parsed) return { config: null, path, error: parsed.error };
 	return { config: parsed.value, path };
-}
+});
 
-export async function saveConfig(agentDir: string, config: DeliberateConfig): Promise<string> {
+export const saveConfig = Effect.fnUntraced(function*(agentDir: string, config: DeliberateConfig) {
 	const path = configFilePath(agentDir);
-	await atomicWriteFile(path, `${JSON.stringify(config, null, "\t")}\n`);
+	yield* atomicWriteFile(path, `${JSON.stringify(config, null, "\t")}\n`);
 	return path;
-}
+});
 
-export async function clearConfig(agentDir: string): Promise<void> {
-	await rm(configFilePath(agentDir), { force: true });
-}
+export const clearConfig = Effect.fnUntraced(function*(agentDir: string) {
+	yield* Effect.tryPromise({ try: () => rm(configFilePath(agentDir), { force: true }), catch: (error) => error });
+});
 
 /** Remove one mode; returns null when no mode remains (caller may delete the file). */
 export function clearMode(config: DeliberateConfig | null, mode: DeliberateMode): DeliberateConfig | null {

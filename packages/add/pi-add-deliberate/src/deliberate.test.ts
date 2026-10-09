@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Effect } from "effect";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { MarkdownTheme, TUI } from "@earendil-works/pi-tui";
@@ -61,17 +62,17 @@ describe("config validation", () => {
 	test("loadConfig treats missing, malformed, and invalid files as unconfigured", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "deliberate-config-"));
 		try {
-			expect((await loadConfig(dir)).config).toBeNull();
+			expect((await Effect.runPromise(loadConfig(dir))).config).toBeNull();
 			await writeFile(join(dir, "deliberate.json"), "not json");
-			const malformed = await loadConfig(dir);
+			const malformed = await Effect.runPromise(loadConfig(dir));
 			expect(malformed.config).toBeNull();
 			expect(malformed.error).toBeString();
 			await writeFile(join(dir, "deliberate.json"), JSON.stringify({ plan: { path: "P.md", extra: 1 } }));
-			const invalid = await loadConfig(dir);
+			const invalid = await Effect.runPromise(loadConfig(dir));
 			expect(invalid.config).toBeNull();
 			expect(invalid.error).toBeString();
 			await writeFile(join(dir, "deliberate.json"), JSON.stringify({ plan: { path: "P.md" } }));
-			const valid = await loadConfig(dir);
+			const valid = await Effect.runPromise(loadConfig(dir));
 			expect(valid.config?.plan?.path).toBe("P.md");
 		} finally {
 			await rm(dir, { recursive: true, force: true });
@@ -145,9 +146,9 @@ describe("plan markdown and atomic writes", () => {
 		const dir = await mkdtemp(join(tmpdir(), "deliberate-"));
 		try {
 			const target = join(dir, "nested", "PLAN.md");
-			await atomicWriteFile(target, "first\n");
+			await Effect.runPromise(atomicWriteFile(target, "first\n"));
 			expect(await readFile(target, "utf8")).toBe("first\n");
-			await atomicWriteFile(target, "second\n");
+			await Effect.runPromise(atomicWriteFile(target, "second\n"));
 			expect(await readFile(target, "utf8")).toBe("second\n");
 			const nested = await readdir(join(dir, "nested"));
 			expect(nested).toEqual(["PLAN.md"]);
