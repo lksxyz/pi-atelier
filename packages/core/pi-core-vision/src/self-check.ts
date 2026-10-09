@@ -127,7 +127,7 @@ try {
       headers: new Headers({ "retry-after": "1" }),
       text: async () => "Requests per minute limit exceeded",
     } as unknown as Response;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   let apiThrew = false;
   const t0 = Date.now();
   try {
@@ -157,7 +157,7 @@ try {
       headers: new Headers({ "retry-after": "5" }),
       text: async () => "Requests per minute limit exceeded",
     } as unknown as Response;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   let abortErr: Error | null = null;
   const abortT0 = Date.now();
   const abortP = Effect.runPromise(describeBase64("eA==", "image/png", {
@@ -171,7 +171,7 @@ try {
   });
   setTimeout(() => ac.abort(), 150);
   await abortP;
-  assert(abortErr !== null && abortErr.message.includes("aborted during retry"), "abort during retry must reject with a clear message");
+  assert(abortErr !== null && String(abortErr).includes("aborted during retry"), "abort during retry must reject with a clear message");
   assert(abortedAttempts === 1, "abort during retry must not trigger a second attempt");
   assert(Date.now() - abortT0 < 2000, "abort must cut the backoff short (not wait 5s)");
 
@@ -194,7 +194,7 @@ try {
       json: async () => ({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
       text: async () => "",
     } as unknown as Response;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   const chained = await Effect.runPromise(describeBase64("eA==", "image/png", {
     baseUrl: "https://api.example.com/v1",
     apiKey: "k",
@@ -232,7 +232,7 @@ globalThis.fetch = (async () => {
     json: async () => ({ choices: [{ message: { content: "cached-now" } }], usage: { prompt_tokens: 9, completion_tokens: 3 } }),
     text: async () => "",
   } as unknown as Response;
-}) as typeof fetch;
+}) as unknown as typeof fetch;
 const first = await Effect.runPromise(describeBase64("QUJERUZH", "image/png", cfgA));
 const second = await Effect.runPromise(describeBase64("QUJERUZH", "image/png", cfgA));
 assert(first.text === "cached-now" && second.text === "cached-now", "both calls return description");

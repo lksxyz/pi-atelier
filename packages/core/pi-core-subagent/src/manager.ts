@@ -696,7 +696,7 @@ export class SubagentManager {
 					manager.notifyParent(run, "asked", { taskId: task.id, agent: task.agent, question, urgent });
 				}
 
-				const reply = yield* manager.awaitParentReply(run.id, taskId, PARENT_REPLY_TIMEOUT_MS);
+				const reply = yield* manager.awaitParentReplyEffect(run.id, taskId, PARENT_REPLY_TIMEOUT_MS);
 
 				if (!isLive(task.status)) {
 					return "(your task was canceled while you waited — stop work and return immediately)";
@@ -738,7 +738,7 @@ export class SubagentManager {
 			onPollMailbox: (taskId) => this.mailboxes.poll(`${run.id}:${taskId}`),
 		};
 	}
-	private awaitParentReply(runId: string, taskId: string, timeoutMs = 0): Effect.Effect<string> {
+	private awaitParentReplyEffect(runId: string, taskId: string, timeoutMs = 0): Effect.Effect<string> {
 		const key = `${runId}:${taskId}`;
 		const reply = Deferred.makeUnsafe<string>();
 		const entry: PendingReply = {
@@ -748,7 +748,6 @@ export class SubagentManager {
 			},
 		};
 		this.pendingReplies.set(key, entry);
-		void Effect.runPromise(Effect.sleep(0).pipe(Effect.andThen(Deferred.await(reply))));
 		const waiting = Deferred.await(reply);
 		if (timeoutMs <= 0) return waiting;
 		return Effect.timeoutOrElse(waiting, {
@@ -757,6 +756,9 @@ export class SubagentManager {
 				"The parent did not answer in time. Proceed autonomously with your best judgment and state the assumption you made in your final answer.",
 			),
 		});
+	}
+	private awaitParentReply(runId: string, taskId: string, timeoutMs = 0): Promise<string> {
+		return Effect.runPromise(this.awaitParentReplyEffect(runId, taskId, timeoutMs));
 	}
 	deliverReply(runId: string, taskId: string, message: string): boolean {
 		const pending = this.pendingReplies.get(`${runId}:${taskId}`);

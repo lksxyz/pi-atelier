@@ -74,6 +74,16 @@ export interface SkippedTask {
 	needs: string[];
 }
 
+const awaitAbort = (signal: AbortSignal): Effect.Effect<never> =>
+	Effect.callback<never>((resume) => {
+		if (signal.aborted) return resume(Effect.interrupt);
+		const onAbort = () => resume(Effect.interrupt);
+		signal.addEventListener("abort", onAbort, { once: true });
+		return Effect.sync(() => {
+			signal.removeEventListener("abort", onAbort);
+		});
+	});
+
 const runConcurrent = <T>(
 	items: T[],
 	concurrency: number,
@@ -82,21 +92,24 @@ const runConcurrent = <T>(
 ): Effect.Effect<void, unknown> =>
 	Effect.gen(function* () {
 		if (externalSignal?.aborted) return yield* Effect.interrupt;
-		const results = yield* Effect.forEach(
+		const runWave = Effect.forEach(
 			items,
 			(item, index) =>
-				Effect.tryPromise({
-					try: (fiberSignal) => fn(item, index, externalSignal ? AbortSignal.any([externalSignal, fiberSignal]) : fiberSignal),
-					catch: (error) => error,
-				}).pipe(Effect.exit),
+				Effect.scoped(Effect.gen(function* () {
+					const fiberSignal = yield* Effect.abortSignal;
+					return yield* fn(item, index, externalSignal ? AbortSignal.any([externalSignal, fiberSignal]) : fiberSignal);
+				}).pipe(Effect.asVoid)).pipe(Effect.exit),
 			{ concurrency: Math.max(1, Math.min(concurrency, items.length)) },
-		);
-		const failure = results.find(Exit.isFailure);
-		if (failure && Exit.isFailure(failure)) {
-			const error = Cause.findErrorOption(failure.cause);
-			if (Option.isSome(error)) return yield* Effect.fail(error.value);
-			return yield* Effect.failCause(failure.cause);
-		}
+		).pipe(Effect.flatMap((results) => {
+			const failure = results.find(Exit.isFailure);
+			if (failure && Exit.isFailure(failure)) {
+				const error = Cause.findErrorOption(failure.cause);
+				if (Option.isSome(error)) return Effect.fail(error.value);
+				return Effect.failCause(failure.cause);
+			}
+			return Effect.void;
+		}));
+		return externalSignal ? yield* Effect.raceFirst(runWave, awaitAbort(externalSignal)) : yield* runWave;
 	});
 
 export const runWaveSchedulerEffect = <T extends SchedulerTask>(

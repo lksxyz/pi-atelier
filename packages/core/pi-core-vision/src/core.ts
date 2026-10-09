@@ -141,7 +141,7 @@ export const describeBase64 = Effect.fnUntraced(function* (
   cfg: VisionConfig,
   signal?: AbortSignal,
   extraHeaders?: Record<string, string>,
-): Effect.fn.Return<{ text: string; usage?: { input: number; output: number } }, Error> {
+): Effect.fn.Return<{ text: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } } }, Error> {
   const models = cfg.model.split(",").map((m) => m.trim()).filter(Boolean);
   if (models.length === 0) return yield* Effect.fail(new Error("pi-vision: no model configured"));
   let lastErr: Error | null = null;
@@ -160,7 +160,7 @@ const describeOnce = Effect.fnUntraced(function* (
   cfg: VisionConfig,
   signal?: AbortSignal,
   extraHeaders?: Record<string, string>,
-): Effect.fn.Return<{ text: string; usage?: { input: number; output: number } }, Error> {
+): Effect.fn.Return<{ text: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } } }, Error> {
   const key = cacheKey(data, cfg);
   const cached = cacheGet(key);
   if (cached !== undefined) return { text: cached };
@@ -177,7 +177,7 @@ const describeOnce = Effect.fnUntraced(function* (
   const attempt = promise((effectSignal) => {
     const timeoutSignal = AbortSignal.timeout(60_000);
     const combined = AbortSignal.any([effectSignal, ...(signal ? [signal] : []), timeoutSignal]);
-    return fetch(`${cfg.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+    return fetch(`${(cfg.baseUrl ?? "").replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
       signal: combined,
       headers: {
@@ -247,7 +247,7 @@ export const describeRawFile = Effect.fnUntraced(function* (
   path: string,
   cfg: VisionConfig,
   signal?: AbortSignal,
-): Effect.fn.Return<{ text: string; usage?: { input: number; output: number } }, Error> {
+): Effect.fn.Return<{ text: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } } }, Error> {
   const { data, mimeType } = yield* readRawImage(path);
   return yield* describeBase64(data, mimeType, cfg, signal);
 });
