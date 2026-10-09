@@ -26,7 +26,8 @@
  */
 import { existsSync, rmSync } from "node:fs";
 import { extname, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { Effect } from "effect";
+import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import type { VisionConfig } from "./src/core.ts";
 import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -98,68 +99,56 @@ export default function (pi: ExtensionAPI) {
       limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
     }),
 
-    async execute(toolCallId, params, signal, onUpdate, ctx: ExtensionCommandContext) {
-      const raw = (params.path ?? "").replace(/^@/, ""); // docs: some models add @ prefix
-      const absolutePath = resolve(ctx.cwd, raw);
+    execute(toolCallId, params, signal, onUpdate, ctx: ExtensionToolContext) {
+      return Effect.runPromise(Effect.gen(function* () {
+        const raw = (params.path ?? "").replace(/^@/, "");
+        const absolutePath = resolve(ctx.cwd, raw);
+        const result = yield* Effect.tryPromise({
+          try: () => createReadToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx),
+          catch: (error) => error instanceof Error ? error : new Error(String(error)),
+        });
+        const image = result.content.find((c) => c.type === "image");
+        if (modelSupportsImages(ctx.model)) return result;
 
-      // Delegate to pi's real read: photon resize, magic-byte mime detection,
-      // truncation, offset/limit — byte-identical built-in behavior.
-      const result = await createReadToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
-
-      const image = result.content.find((c) => c.type === "image");
-      // Model can see images natively → built-in result untouched.
-      if (modelSupportsImages(ctx.model)) return result;
-
-      const cfg = loadConfig();
-      const cfgReady = isConfigComplete(cfg);
-
-      if (!image) {
-        // Built-in returned no image (photon missing / BMP without processor / decode fail).
-        // Text-only model: fall back to raw file describe when the path looks like an image.
-        if (!cfgReady || !MIME[extname(absolutePath).toLowerCase()]) return result;
-        onUpdate?.({ content: [{ type: "text", text: `Describing image via ${cfg.model}…` }] });
-        try {
-          const { data, mimeType } = await readRawImage(absolutePath);
-          const { text, usage } = cfg.provider
-            ? await describeViaRegistry(data, mimeType, cfg, ctx)
-            : await describeBase64(data, mimeType, cfg, signal);
+        const cfg = loadConfig();
+        const cfgReady = isConfigComplete(cfg);
+        if (!image) {
+          if (!cfgReady || !MIME[extname(absolutePath).toLowerCase()]) return result;
+          onUpdate?.({ content: [{ type: "text", text: `Describing image via ${cfg.model}…` }], details: {} });
+          const description = yield* Effect.result(Effect.gen(function* () {
+            const { data, mimeType } = yield* readRawImage(absolutePath);
+            return yield* (cfg.provider
+              ? describeViaRegistry(data, mimeType, cfg, ctx)
+              : describeBase64(data, mimeType, cfg, signal));
+          }));
+          if (description._tag === "Failure") return visionFailureResult(description.failure);
           return {
-            content: [{ type: "text", text: untrustedImageText(cfg.model, text) }],
+            content: [{ type: "text" as const, text: untrustedImageText(cfg.model, description.success.text) }],
             details: { vision: true },
-            usage,
+            usage: description.success.usage,
           };
-        } catch (e) {
-          return visionFailureResult(e as Error);
         }
-      }
 
-      // Text-only model + image: pi attached an image the model can't see.
-      // Reuse pi's already-resized base64 and describe it via the vision model.
-      if (!cfgReady) {
-        throw new Error(
-          `pi-vision: model ${ctx.model?.id ?? "unknown"} cannot see images and pi-vision is not configured. ` +
-            "Run /pi-vision set baseUrl=... apiKey=... model=... or set PI_VISION_* env vars.",
-        );
-      }
-      onUpdate?.({ content: [{ type: "text", text: `Describing image via ${cfg.model}…` }] });
-      try {
-        const { text, usage } = cfg.provider
-          ? await describeViaRegistry(image.data, image.mimeType, cfg, ctx)
-          : await describeBase64(image.data, image.mimeType, cfg, signal);
+        if (!cfgReady) {
+          return yield* Effect.fail(new Error(
+            `pi-vision: model ${ctx.model?.id ?? "unknown"} cannot see images and pi-vision is not configured. ` +
+              "Run /pi-vision set baseUrl=... apiKey=... model=... or set PI_VISION_* env vars.",
+          ));
+        }
+        onUpdate?.({ content: [{ type: "text", text: `Describing image via ${cfg.model}…` }], details: {} });
+        const description = yield* Effect.result(cfg.provider
+          ? describeViaRegistry(image.data, image.mimeType, cfg, ctx)
+          : describeBase64(image.data, image.mimeType, cfg, signal));
+        if (description._tag === "Failure") return visionFailureResult(description.failure);
         return {
-          // Description for the text-only parent model; image block kept so the
-          // TUI (kitty/iTerm) and /resume still render it — pi's provider layer
-          // strips image blocks for non-vision models anyway.
           content: [
-            { type: "text", text: untrustedImageText(cfg.model, text) },
-            { type: "image", data: image.data, mimeType: image.mimeType },
+            { type: "text" as const, text: untrustedImageText(cfg.model, description.success.text) },
+            { type: "image" as const, data: image.data, mimeType: image.mimeType },
           ],
           details: { vision: true },
-          usage, // nested LLM usage → counted in pi session stats
+          usage: description.success.usage,
         };
-      } catch (e) {
-        return visionFailureResult(e as Error);
-      }
+      }));
     },
   });
 }
@@ -168,12 +157,13 @@ export default function (pi: ExtensionAPI) {
  * Graceful failure: return a placeholder instead of throwing, so the parent
  * model moves on (OCR, ask user) instead of retry-looping a dead vision API.
  */
-function visionFailureResult(err: Error) {
+function visionFailureResult(err: unknown) {
+  const error = err instanceof Error ? err : new Error(String(err));
   return {
     content: [
       {
-        type: "text",
-        text: `[image: description unavailable — ${err.message.slice(0, 200)}. The image was not described; use OCR or ask the user if you need its content.]`,
+        type: "text" as const,
+        text: `[image: description unavailable — ${error.message.slice(0, 200)}. The image was not described; use OCR or ask the user if you need its content.]`
       },
     ],
     details: { vision: false },
@@ -186,12 +176,12 @@ function visionFailureResult(err: Error) {
  * google-generative-ai, openai-*, and custom provider APIs, with pi-managed
  * auth (apiKey/oauth/headers). Cache is keyed per provider+model+image.
  */
-async function describeViaRegistry(
+const describeViaRegistry = Effect.fnUntraced(function* (
   data: string,
   mimeType: string,
   cfg: VisionConfig,
-  ctx: ExtensionCommandContext,
-): Promise<{ text: string; usage?: { input: number; output: number } }> {
+  ctx: ExtensionToolContext,
+): Effect.fn.Return<{ text: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } } }, Error> {
   const registry = ctx.modelRegistry;
   const model = registry.find(cfg.provider ?? "", cfg.model);
   if (!model) {
@@ -208,14 +198,17 @@ async function describeViaRegistry(
   // OpenAI-compatible providers: reuse our own transport (retry + stream:false + cache),
   // with auth/baseUrl resolved through pi's registry (auth.json / env / provider config).
   if (model.api === "openai-completions") {
-    const auth = await registry.getProviderAuth(cfg.provider ?? "");
+    const auth = yield* Effect.tryPromise({
+      try: () => registry.getProviderAuth(cfg.provider ?? ""),
+      catch: (error) => error instanceof Error ? error : new Error(String(error)),
+    });
     const baseUrl = auth?.auth.baseUrl ?? model.baseUrl;
     const apiKey = auth?.auth.apiKey;
     const headers = auth?.auth.headers as Record<string, string> | undefined;
     if (!baseUrl || (!apiKey && !headers)) {
       throw new Error(`pi-vision: no resolved auth for provider ${cfg.provider} (openai-completions)`);
     }
-    return describeBase64(
+    return yield* describeBase64(
       data,
       mimeType,
       { ...cfg, baseUrl, apiKey: apiKey ?? "" },
@@ -230,16 +223,14 @@ async function describeViaRegistry(
   const cached = cacheGet(key);
   if (cached !== undefined) return { text: cached };
 
-  const message = await registry.complete(model, {
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: cfg.prompt },
-          { type: "image", data, mimeType },
-        ],
-      },
-    ],
+  const message = yield* Effect.tryPromise({
+    try: () => registry.complete(model, {
+      messages: [{ role: "user", content: [
+        { type: "text", text: cfg.prompt },
+        { type: "image", data, mimeType },
+      ], timestamp: Date.now() }],
+    }),
+    catch: (error) => error instanceof Error ? error : new Error(String(error)),
   });
   const text = (message.content ?? [])
     .filter((c) => c.type === "text")
@@ -253,7 +244,7 @@ async function describeViaRegistry(
   }
   cacheSet(key, text);
   return { text, usage: message.usage };
-}
+});
 
 /**
  * Frame the vision model's description as UNTRUSTED DATA. The description is

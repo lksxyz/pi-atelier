@@ -183,18 +183,18 @@ describe("wave frontier (real scheduler)", () => {
 
 	test("scheduler forwards the external abort signal to running tasks", async () => {
 		const controller = new AbortController();
-		let receivedSignal: AbortSignal | undefined;
+		let receivedSignalAborted: boolean | undefined;
 		await runWaveScheduler(
 			[{ id: "a", needs: [] }],
 			1,
 			new Map(),
 			new Set(),
 			async (_task, _index, signal) => {
-				receivedSignal = signal;
+				receivedSignalAborted = signal.aborted;
 			},
 			controller.signal,
 		);
-		expect(receivedSignal?.aborted).toBe(false);
+		expect(receivedSignalAborted).toBe(false);
 	});
 
 	test("aborted waves interrupt their active task effects", async () => {

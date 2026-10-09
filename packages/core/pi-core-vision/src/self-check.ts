@@ -3,6 +3,7 @@
  * Imports only core.ts + photon — no pi packages, so plain bun resolves it.
  */
 import { join } from "node:path";
+import { Effect } from "effect";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   MIME,
@@ -104,13 +105,13 @@ try {
     } as unknown as Response;
   }) as typeof fetch;
 
-  const out = await describeBase64("c2stZmFrZQ==", "image/jpeg", {
+  const out = await Effect.runPromise(describeBase64("c2stZmFrZQ==", "image/jpeg", {
     baseUrl: "https://api.example.com/v1",
     apiKey: "k",
     model: "m",
     prompt: "p",
     maxTokens: 100,
-  });
+  }));
   assert(out.text === "a chart with 3 bars", "description text passes through");
   assert(out.usage?.input === 12 && out.usage?.output === 5, "usage maps from OpenAI fields");
   assert(out.usage?.totalTokens === 17, "totalTokens sums");
@@ -126,17 +127,17 @@ try {
       headers: new Headers({ "retry-after": "1" }),
       text: async () => "Requests per minute limit exceeded",
     } as unknown as Response;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   let apiThrew = false;
   const t0 = Date.now();
   try {
-    await describeBase64("eA==", "image/png", {
+    await Effect.runPromise(describeBase64("eA==", "image/png", {
       baseUrl: "https://api.example.com/v1",
       apiKey: "k",
       model: "m",
       prompt: "p",
       maxTokens: 100,
-    });
+    }));
   } catch {
     apiThrew = true;
   }
@@ -156,21 +157,21 @@ try {
       headers: new Headers({ "retry-after": "5" }),
       text: async () => "Requests per minute limit exceeded",
     } as unknown as Response;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   let abortErr: Error | null = null;
   const abortT0 = Date.now();
-  const abortP = describeBase64("eA==", "image/png", {
+  const abortP = Effect.runPromise(describeBase64("eA==", "image/png", {
     baseUrl: "https://api.example.com/v1",
     apiKey: "k",
     model: "m",
     prompt: "p",
     maxTokens: 100,
-  }, ac.signal).catch((e: unknown) => {
+  }, ac.signal)).catch((e: unknown) => {
     abortErr = e instanceof Error ? e : new Error(String(e));
   });
   setTimeout(() => ac.abort(), 150);
   await abortP;
-  assert(abortErr !== null && abortErr.message.includes("aborted during retry"), "abort during retry must reject with a clear message");
+  assert(abortErr !== null && String(abortErr).includes("aborted during retry"), "abort during retry must reject with a clear message");
   assert(abortedAttempts === 1, "abort during retry must not trigger a second attempt");
   assert(Date.now() - abortT0 < 2000, "abort must cut the backoff short (not wait 5s)");
 
@@ -193,14 +194,14 @@ try {
       json: async () => ({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
       text: async () => "",
     } as unknown as Response;
-  }) as typeof fetch;
-  const chained = await describeBase64("eA==", "image/png", {
+  }) as unknown as typeof fetch;
+  const chained = await Effect.runPromise(describeBase64("eA==", "image/png", {
     baseUrl: "https://api.example.com/v1",
     apiKey: "k",
     model: "m1,m2",
     prompt: "p",
     maxTokens: 100,
-  });
+  }));
   assert(chained.text === "ok" && calls.length === 3 && calls[0] === "m1" && calls[2] === "m2", "model chain must fall through to m2 after m1 retry")
 } finally {
   globalThis.fetch = originalFetch;
@@ -231,9 +232,9 @@ globalThis.fetch = (async () => {
     json: async () => ({ choices: [{ message: { content: "cached-now" } }], usage: { prompt_tokens: 9, completion_tokens: 3 } }),
     text: async () => "",
   } as unknown as Response;
-}) as typeof fetch;
-const first = await describeBase64("QUJERUZH", "image/png", cfgA);
-const second = await describeBase64("QUJERUZH", "image/png", cfgA);
+}) as unknown as typeof fetch;
+const first = await Effect.runPromise(describeBase64("QUJERUZH", "image/png", cfgA));
+const second = await Effect.runPromise(describeBase64("QUJERUZH", "image/png", cfgA));
 assert(first.text === "cached-now" && second.text === "cached-now", "both calls return description");
 assert(fetches === 1, "second call must be a cache hit (1 fetch total)");
 assert(second.usage === undefined, "cache hit carries no usage");
@@ -251,13 +252,13 @@ const bigFile = join("/tmp", `pi-vision-big-${process.pid}.bin`);
 writeFileSync(bigFile, Buffer.alloc(MAX_IMAGE_BYTES + 1));
 let bigThrew = false;
 try {
-  await describeRawFile(bigFile, {
+  await Effect.runPromise(describeRawFile(bigFile, {
     baseUrl: "https://x/v1",
     apiKey: "k",
     model: "m",
     prompt: "p",
     maxTokens: 10,
-  });
+  }));
 } catch {
   bigThrew = true;
 }
