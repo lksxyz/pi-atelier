@@ -1,51 +1,51 @@
 {
-  "name": "@lukisxyz/pi-add-optchat",
-  "version": "0.1.2",
-  "description": "Pi extension for persistent chat memory with a bounded, zoomable summary tree.",
-  "license": "MIT",
-  "type": "module",
-  "main": "./src/index.ts",
-  "files": [
-    "src",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "pi",
-    "pi-extension",
-    "memory",
-    "optchat"
-  ],
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run test",
-    "check": "pnpm run typecheck && pnpm run test"
-  },
-  "dependencies": {
-    "effect": "^4.0.1"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "devDependencies": {
-    "typescript": "^7.0.2",
-    "@types/node": "^22.12.0",
-    "vitest": "^5.0.3"
-  },
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/lksxyz/pi-atelier",
-    "directory": "packages/add/pi-add-optchat"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  }
+	"name": "@lukisxyz/pi-add-optchat",
+	"version": "0.1.2",
+	"description": "Pi extension for persistent chat memory with a bounded, zoomable summary tree.",
+	"license": "MIT",
+	"type": "module",
+	"main": "./src/index.ts",
+	"files": [
+		"src",
+		"README.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi",
+		"pi-extension",
+		"memory",
+		"optchat"
+	],
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run test",
+		"check": "pnpm run typecheck && pnpm run test"
+	},
+	"dependencies": {
+		"effect": "^4.0.1"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"typescript": "^7.0.2",
+		"@types/node": "^22.12.0",
+		"vitest": "^5.0.3"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/lksxyz/pi-atelier",
+		"directory": "packages/add/pi-add-optchat"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	}
 }

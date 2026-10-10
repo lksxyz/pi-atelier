@@ -1,48 +1,48 @@
 {
-  "name": "@lukisxyz/pi-add-code-diagnostic",
-  "version": "1.0.0",
-  "type": "module",
-  "description": "pi extension: repo-scoped typecheck/lint diagnostics for coding agents (LSP-equivalent, no servers).",
-  "license": "MIT",
-  "main": "./src/index.ts",
-  "files": [
-    "src",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "pi",
-    "pi-coding-agent",
-    "pi-extension",
-    "pi-package",
-    "diagnostics",
-    "lsp",
-    "lint"
-  ],
-  "dependencies": {
-    "effect": "^4.0.1"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/lksxyz/pi-atelier",
-    "directory": "packages/add/pi-add-code-diagnostic"
-  },
-  "scripts": {
-    "test": "node --import tsx --test src"
-  },
-  "devDependencies": {
-    "tsx": "^4.23.15"
-  }
+	"name": "@lukisxyz/pi-add-code-diagnostic",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "pi extension: repo-scoped typecheck/lint diagnostics for coding agents (LSP-equivalent, no servers).",
+	"license": "MIT",
+	"main": "./src/index.ts",
+	"files": [
+		"src",
+		"README.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi",
+		"pi-coding-agent",
+		"pi-extension",
+		"pi-package",
+		"diagnostics",
+		"lsp",
+		"lint"
+	],
+	"dependencies": {
+		"effect": "^4.0.1"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/lksxyz/pi-atelier",
+		"directory": "packages/add/pi-add-code-diagnostic"
+	},
+	"scripts": {
+		"test": "node --import tsx --test src"
+	},
+	"devDependencies": {
+		"tsx": "^4.23.15"
+	}
 }

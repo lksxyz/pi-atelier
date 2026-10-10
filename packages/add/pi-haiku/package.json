@@ -1,64 +1,64 @@
 {
-  "name": "@lukisxyz/pi-haiku",
-  "version": "1.0.0",
-  "description": "Clean, structured header, footer, and live timer for Pi without overriding the active theme.",
-  "license": "MIT",
-  "type": "module",
-  "main": "./src/index.ts",
-  "files": [
-    "src",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "pi-package",
-    "pi",
-    "pi-coding-agent",
-    "pi-extension",
-    "footer",
-    "header",
-    "tui"
-  ],
-  "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit"
-  },
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "dependencies": {
-    "effect": "^4.0.1"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
-  },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": {
-      "optional": true
-    },
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
-    "@earendil-works/pi-tui": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@earendil-works/pi-ai": "^1.0.1",
-    "@earendil-works/pi-coding-agent": "^1.0.1",
-    "@earendil-works/pi-tui": "^1.0.1",
-    "typescript": "^7.0.2"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/lksxyz/pi-atelier",
-    "directory": "packages/add/pi-haiku"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  }
+	"name": "@lukisxyz/pi-haiku",
+	"version": "1.0.0",
+	"description": "Clean, structured header, footer, and live timer for Pi without overriding the active theme.",
+	"license": "MIT",
+	"type": "module",
+	"main": "./src/index.ts",
+	"files": [
+		"src",
+		"README.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-coding-agent",
+		"pi-extension",
+		"footer",
+		"header",
+		"tui"
+	],
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"dependencies": {
+		"effect": "^4.0.1"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-ai": {
+			"optional": true
+		},
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		},
+		"@earendil-works/pi-tui": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "^1.0.1",
+		"@earendil-works/pi-coding-agent": "^1.0.1",
+		"@earendil-works/pi-tui": "^1.0.1",
+		"typescript": "^7.0.2"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/lksxyz/pi-atelier",
+		"directory": "packages/add/pi-haiku"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	}
 }

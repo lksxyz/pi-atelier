@@ -1,54 +1,54 @@
 {
-  "name": "@lukisxyz/pi-core-ask",
-  "version": "1.0.3",
-  "type": "module",
-  "description": "Minimalist pi questionnaire: ask_user_question tool with up to 4 structured questions (2-4 options, multiSelect, previews, type-something).",
-  "license": "MIT",
-  "main": "./src/index.ts",
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run test",
-    "check": "pnpm run typecheck && pnpm run test"
-  },
-  "files": [
-    "src",
-    "assets",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "pi",
-    "pi-coding-agent",
-    "pi-extension",
-    "pi-package",
-    "questionnaire",
-    "ask"
-  ],
-  "dependencies": {
-    "effect": "^4.0.1"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "devDependencies": {
-    "typescript": "^7.0.2",
-    "@types/node": "^22.12.0",
-    "vitest": "^5.0.3"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/lksxyz/pi-atelier.git",
-    "directory": "packages/core/pi-core-ask"
-  }
+	"name": "@lukisxyz/pi-core-ask",
+	"version": "1.0.3",
+	"type": "module",
+	"description": "Minimalist pi questionnaire: ask_user_question tool with up to 4 structured questions (2-4 options, multiSelect, previews, type-something).",
+	"license": "MIT",
+	"main": "./src/index.ts",
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run test",
+		"check": "pnpm run typecheck && pnpm run test"
+	},
+	"files": [
+		"src",
+		"assets",
+		"README.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi",
+		"pi-coding-agent",
+		"pi-extension",
+		"pi-package",
+		"questionnaire",
+		"ask"
+	],
+	"dependencies": {
+		"effect": "^4.0.1"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"devDependencies": {
+		"typescript": "^7.0.2",
+		"@types/node": "^22.12.0",
+		"vitest": "^5.0.3"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lksxyz/pi-atelier.git",
+		"directory": "packages/core/pi-core-ask"
+	}
 }

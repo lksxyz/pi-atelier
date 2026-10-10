@@ -1,59 +1,59 @@
 {
-  "name": "@lukisxyz/pi-core-vision",
-  "version": "1.0.2",
-  "description": "Transparent vision fallback for text-only pi models — overrides read so image files are described by a vision model when the active model cannot see images. Supports any OpenAI-compatible endpoint.",
-  "license": "MIT",
-  "author": "Pi Atelier contributors",
-  "type": "module",
-  "engines": {
-    "node": ">=20"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/lksxyz/pi-atelier",
-    "directory": "packages/core/pi-core-vision"
-  },
-  "homepage": "https://github.com/lksxyz/pi-atelier/tree/main/packages/core/pi-core-vision#readme",
-  "bugs": {
-    "url": "https://github.com/lksxyz/pi-atelier/tree/main/packages/core/pi-core-vision/issues"
-  },
-  "keywords": [
-    "pi-package",
-    "pi",
-    "pi-extension",
-    "vision",
-    "multimodal",
-    "image",
-    "fallback",
-    "read"
-  ],
-  "files": [
-    "index.ts",
-    "src/",
-    "README.md",
-    "LICENSE"
-  ],
-  "dependencies": {
-    "effect": "^4.0.1"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
-  "scripts": {
-    "test": "tsx src/self-check.ts",
-    "prepublishOnly": "pnpm run test"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "devDependencies": {
-    "tsx": "^4.23.15"
-  }
+	"name": "@lukisxyz/pi-core-vision",
+	"version": "1.0.2",
+	"description": "Transparent vision fallback for text-only pi models — overrides read so image files are described by a vision model when the active model cannot see images. Supports any OpenAI-compatible endpoint.",
+	"license": "MIT",
+	"author": "Pi Atelier contributors",
+	"type": "module",
+	"engines": {
+		"node": ">=20"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/lksxyz/pi-atelier",
+		"directory": "packages/core/pi-core-vision"
+	},
+	"homepage": "https://github.com/lksxyz/pi-atelier/tree/main/packages/core/pi-core-vision#readme",
+	"bugs": {
+		"url": "https://github.com/lksxyz/pi-atelier/tree/main/packages/core/pi-core-vision/issues"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension",
+		"vision",
+		"multimodal",
+		"image",
+		"fallback",
+		"read"
+	],
+	"files": [
+		"index.ts",
+		"src/",
+		"README.md",
+		"LICENSE"
+	],
+	"dependencies": {
+		"effect": "^4.0.1"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "tsx src/self-check.ts",
+		"prepublishOnly": "pnpm run test"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	},
+	"devDependencies": {
+		"tsx": "^4.23.15"
+	}
 }
