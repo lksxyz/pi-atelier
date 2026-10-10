@@ -116,8 +116,8 @@ Switching modes mid-session is the only cache cost: the changed section invalida
 ## Development
 
 ```bash
-bun test        # unit tests
-bun run check   # typecheck + lint + tests
+pnpm --filter @lukisxyz/pi-add-mode test        # unit tests
+pnpm --filter @lukisxyz/pi-add-mode check       # typecheck + lint + tests
 ```
 
 Load the source directly without installing:

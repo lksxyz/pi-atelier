@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { applyTaskMutation, buildToolResult, deriveBlocks } from "../src/state.ts";
 import { EMPTY_STATE, TodoParamsSchema, type Task, type TaskAction, type TaskMutationParams, type TaskState, type TaskStatus } from "../src/types.ts";
 

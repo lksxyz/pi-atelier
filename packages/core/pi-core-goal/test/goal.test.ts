@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 
 import { assistantUsageTokens, normalizeStatus, statusAfterObjectiveEdit, validateObjective } from "../src/index.ts";
 

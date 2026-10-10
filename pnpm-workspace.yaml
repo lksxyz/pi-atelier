@@ -1,0 +1,9 @@
+packages:
+  - "packages/core/*"
+  - "packages/add/*"
+  - "packages/pi-toolset"
+
+allowBuilds:
+  '@google/genai': true
+  esbuild: true
+  protobufjs: true

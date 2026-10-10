@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { describe, expect, test } from "vitest";
 import { clampResumeThinking, ensureUsableModel } from "../src/manager.ts";
 
 interface ProbeCall {

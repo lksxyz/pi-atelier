@@ -56,9 +56,9 @@ Enter next ↵ select → Type something. = custom ⇫ Esc cancel
 ## Development
 
 ```sh
-bun install
-npx tsc --noEmit
-bun test   # pure-logic: validation guards + response envelope
+pnpm install
+pnpm --filter @lukisxyz/pi-core-ask typecheck
+pnpm --filter @lukisxyz/pi-core-ask test   # pure-logic: validation guards + response envelope
 ```
 
 ## License

@@ -409,7 +409,7 @@ So §9 in practice is two things you already have:
 
 ```sh
 # in the task text — the worker must prove it, not claim it
-Verify: npx tsc --noEmit && bun test
+Verify: npx tsc --noEmit && pnpm test
 
 # in the leader, after the run — ground truth, not narrative
 git diff --stat
@@ -429,9 +429,9 @@ The corollary is in the design principles: when there are no edges, don't draw a
 ## Development
 
 ```sh
-bun install        # dev deps (typecheck/test only; runtime uses pi's bundled SDK)
-npx tsc --noEmit
-bun test           # pure-logic tests (wave scheduling, edge payload, mailbox, failure classification, watchdog)
+pnpm install       # dev deps (typecheck/test only; runtime uses pi's bundled SDK)
+pnpm --filter @lukisxyz/pi-core-subagent typecheck
+pnpm --filter @lukisxyz/pi-core-subagent test   # pure-logic tests (wave scheduling, edge payload, mailbox, failure classification, watchdog)
 ```
 
 Runtime state: runs persist to `<parent-session>.subagents.json` sidecar; restored (non-terminal → aborted) on session start.

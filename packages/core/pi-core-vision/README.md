@@ -120,7 +120,7 @@ Caveats: single run per cell; gateway routing flakiness affects variance.
 ## Development
 
 ```bash
-bun src/self-check.ts    # logic self-checks (no pi needed, no API calls)
+pnpm --filter @lukisxyz/pi-core-vision test   # logic self-checks (no pi needed, no API calls)
 ```
 
 ## License

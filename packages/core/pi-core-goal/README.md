@@ -25,5 +25,5 @@ Tools exposed to the agent: `create_goal`, `get_goal`, `update_goal` (complete/b
 ## Test
 
 ```bash
-bun test
+pnpm --filter @lukisxyz/pi-core-goal test
 ```

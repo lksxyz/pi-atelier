@@ -1,4 +1,3 @@
-import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +6,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { MarkdownTheme, TUI } from "@earendil-works/pi-tui";
 import { Effect } from "effect";
+import { describe, expect, test } from "vitest";
 import {
 	atomicWriteFile,
 	clearMode,
@@ -66,11 +66,11 @@ describe("config validation", () => {
 			await writeFile(join(dir, "deliberate.json"), "not json");
 			const malformed = await Effect.runPromise(loadConfig(dir));
 			expect(malformed.config).toBeNull();
-			expect(malformed.error).toBeString();
+			expect(malformed.error).toEqual(expect.any(String));
 			await writeFile(join(dir, "deliberate.json"), JSON.stringify({ plan: { path: "P.md", extra: 1 } }));
 			const invalid = await Effect.runPromise(loadConfig(dir));
 			expect(invalid.config).toBeNull();
-			expect(invalid.error).toBeString();
+			expect(invalid.error).toEqual(expect.any(String));
 			await writeFile(join(dir, "deliberate.json"), JSON.stringify({ plan: { path: "P.md" } }));
 			const valid = await Effect.runPromise(loadConfig(dir));
 			expect(valid.config?.plan?.path).toBe("P.md");
@@ -137,8 +137,8 @@ describe("plan state", () => {
 
 describe("plan markdown and atomic writes", () => {
 	test("empty or whitespace-only markdown is rejected", () => {
-		expect(validatePlanMarkdown("")).toBeString();
-		expect(validatePlanMarkdown("  \n ")).toBeString();
+		expect(validatePlanMarkdown("")).toEqual(expect.any(String));
+		expect(validatePlanMarkdown("  \n ")).toEqual(expect.any(String));
 		expect(validatePlanMarkdown("# Plan")).toBeNull();
 	});
 

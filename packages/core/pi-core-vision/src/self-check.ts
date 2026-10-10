@@ -1,6 +1,6 @@
 /**
- * pi-vision self-check. Run: `bun src/self-check.ts` (from extension dir or anywhere).
- * Imports only core.ts + photon — no pi packages, so plain bun resolves it.
+ * pi-vision self-check. Run: `tsx src/self-check.ts` (from extension dir or anywhere).
+ * Imports only core.ts + photon — no pi packages, so plain tsx resolves it.
  */
 import { join } from "node:path";
 import { Effect } from "effect";

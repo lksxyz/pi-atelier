@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { ModeEditor } from "./editor.ts";
 
 const MARK = (text: string) => `<M>${text}</M>`;

@@ -31,6 +31,6 @@ A separate project/global store and `/optchat note` follow the gist comments' su
 ## Development
 
 ```sh
-npm run typecheck --workspace=@lukisxyz/pi-add-optchat
-bun test packages/add/pi-add-optchat/test
+pnpm --filter @lukisxyz/pi-add-optchat typecheck
+pnpm --filter @lukisxyz/pi-add-optchat test
 ```

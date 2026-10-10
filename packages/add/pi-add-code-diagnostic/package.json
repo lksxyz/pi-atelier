@@ -38,5 +38,11 @@
     "type": "git",
     "url": "https://github.com/lksxyz/pi-atelier",
     "directory": "packages/add/pi-add-code-diagnostic"
+  },
+  "scripts": {
+    "test": "node --import tsx --test src"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
   }
 }

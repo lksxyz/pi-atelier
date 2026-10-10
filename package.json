@@ -1,20 +1,19 @@
 {
 	"name": "pi-atelier",
 	"version": "0.0.0",
+	"packageManager": "pnpm@12.10.1",
 	"description": "Monorepo for @lukisxyz pi extension packages (core + add) and the pi-toolset installer.",
 	"type": "module",
-	"workspaces": [
-		"packages/core/*",
-		"packages/add/*",
-		"packages/pi-toolset"
-	],
+	"engines": {
+		"node": ">=22.12"
+	},
 	"scripts": {
 		"install:core": "node packages/pi-toolset/pi-toolset install",
-		"typecheck": "npm run typecheck --workspaces --if-present",
-		"lint": "npm run lint --workspaces --if-present",
-		"test": "npm run test --workspaces --if-present",
-		"check": "npm run typecheck && npm run lint && npm run test",
-		"verify": "npm install --no-audit --no-fund && npm run check",
+		"typecheck": "pnpm -r --if-present --workspace-concurrency=1 run typecheck",
+		"lint": "pnpm -r --if-present --workspace-concurrency=1 run lint",
+		"test": "pnpm -r --if-present --workspace-concurrency=1 run test",
+		"check": "pnpm run typecheck && pnpm run lint && pnpm run test",
+		"verify": "pnpm install --frozen-lockfile && pnpm run check",
 		"format": "biome format --write ."
 	},
 	"devDependencies": {
@@ -23,7 +22,9 @@
 		"@earendil-works/pi-ai": "^1.0.1",
 		"@earendil-works/pi-coding-agent": "^1.0.1",
 		"@earendil-works/pi-tui": "^1.0.1",
+		"tsx": "^4.23.15",
 		"typebox": "^1.3.27",
-		"typescript": "^7.0.2"
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.3"
 	}
 }

@@ -92,8 +92,8 @@ Per-session state is isolated and saved in `~/.pi/agent/pi-todo-state.json`. Par
 ## Development
 
 ```sh
-bun test packages/core/pi-core-todo/test
-bunx tsc -p packages/core/pi-core-todo/tsconfig.json --noEmit
+pnpm --filter @lukisxyz/pi-core-todo test
+pnpm --filter @lukisxyz/pi-core-todo typecheck
 ```
 
 Tests cover reducers, deep hierarchy operations, deletion, display paths, direct-child counters, narrow/short rendering, keyboard folding/scrolling, resize, and hostile terminal text.

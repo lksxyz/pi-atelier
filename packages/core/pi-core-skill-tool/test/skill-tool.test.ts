@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,7 +85,7 @@ async function runHandler(
 	warnings: string[];
 }> {
 	const warnings: string[] = [];
-	const warn = spyOn(console, "warn").mockImplementation(
+	const warn = vi.spyOn(console, "warn").mockImplementation(
 		(...args: unknown[]) => {
 			warnings.push(args.map(String).join(" "));
 		},

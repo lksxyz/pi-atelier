@@ -1,5 +1,5 @@
 /**
- * pi-vision core — pure logic, no pi imports. Runs under plain `bun` for self-checks.
+ * pi-vision core — pure logic, no pi imports. Runs under plain `node`/`tsx` for self-checks.
  */
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { captureCheckpoint, resumePrompt } from "../src/checkpoint.ts";
 import { makePausedNotice } from "../src/format.ts";
 import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";

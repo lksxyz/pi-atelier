@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { describe, expect, test } from "vitest";
 import { SubagentManager } from "../src/manager.ts";
 import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";
 

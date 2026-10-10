@@ -89,8 +89,8 @@ pi-toolset remove    # remove an extension
 ## 🛠 Development
 
 ```bash
-npm install                 # hoist all workspaces
-npm run check               # typecheck every package
+pnpm install                # hoist all workspaces
+pnpm run check              # typecheck + lint + test every package
 ```
 
 Publish a package from its workspace directory (published to the `@lukisxyz` scope):

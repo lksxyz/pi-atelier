@@ -46,11 +46,14 @@
     ]
   },
   "scripts": {
-    "test": "bun src/self-check.ts",
-    "prepublishOnly": "npm run test"
+    "test": "tsx src/self-check.ts",
+    "prepublishOnly": "pnpm run test"
   },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
   }
 }

@@ -1,6 +1,6 @@
-import { expect, test } from "bun:test";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { expect, test } from "vitest";
 import { renderModelCatalog } from "../src/format.ts";
 import { parsePreferences } from "../src/modelconfig.ts";
 import { listSelectableModels, supportedThinkingLevels } from "../src/models.ts";

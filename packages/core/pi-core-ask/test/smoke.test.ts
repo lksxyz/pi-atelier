@@ -1,8 +1,8 @@
 /**
  * Smoke tests: validation guards + response envelope.
- * Pure logic only — no pi runtime needed. Run: bun test
+ * Pure logic only — no pi runtime needed. Run: pnpm --filter @lukisxyz/pi-core-ask test
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { buildQuestionnaireResponse, validateQuestionnaire } from "../src/response.ts";
 import type { QuestionParams } from "../src/types.ts";
 

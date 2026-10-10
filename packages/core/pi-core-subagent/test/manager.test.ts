@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Effect } from "effect";
+import { describe, expect, test } from "vitest";
 import { clearAgentFileCache } from "../src/agentfile.ts";
 import { SubagentManager } from "../src/manager.ts";
 

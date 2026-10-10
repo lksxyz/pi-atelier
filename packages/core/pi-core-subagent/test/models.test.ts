@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { describe, expect, test } from "vitest";
 import { renderModelCatalog } from "../src/format.ts";
 import extension from "../src/index.ts";
 import type { ModelPreferences } from "../src/modelconfig.ts";

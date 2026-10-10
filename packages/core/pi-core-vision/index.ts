@@ -22,7 +22,7 @@
  *   (json only)        | prompt   description style override
  *   (json only)        | maxTokens
  *
- * Run self-checks: `bun src/self-check.ts`
+ * Run self-checks: `tsx src/self-check.ts`
  */
 import { existsSync, rmSync } from "node:fs";
 import { extname, resolve } from "node:path";

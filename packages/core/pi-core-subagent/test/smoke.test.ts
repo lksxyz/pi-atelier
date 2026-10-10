@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { createChildTools } from "../src/child.ts";
 import { createMailbox } from "../src/mailbox.ts";
 import { classifyFailure, ensureUsableModel, validateThinking } from "../src/manager.ts";
@@ -211,6 +211,6 @@ describe("ensureUsableModel", () => {
 			model: undefined,
 			modelRegistry: { complete: async () => ({ stopReason: "error", errorMessage: "401" }) },
 		} as never as Parameters<typeof ensureUsableModel>[0];
-		expect(ensureUsableModel(ctx, other, undefined)).rejects.toThrow(/unusable/);
+		await expect(ensureUsableModel(ctx, other, undefined)).rejects.toThrow(/unusable/);
 	});
 });

@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { describe, expect, test } from "vitest";
 import { compactLines, makeSummary, SubagentsWidget, taskLine } from "../src/format.ts";
 import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";
 
@@ -91,8 +91,8 @@ describe("taskLine model tag", () => {
 			taskLine(
 				task({ agent: "vendor-factchecker", provider: "openai-codex", model: "gpt-5.6-sol", thinking: "xhigh" }),
 			),
-		).toStartWith("✓ vendor-factchecker [openai-codex/gpt-5.6-sol/xhigh] ·");
-		expect(taskLine(task({ agent: "bare" }))).toStartWith("✓ bare ·");
+		).toMatch(/^✓ vendor-factchecker \[openai-codex\/gpt-5\.6-sol\/xhigh\] ·/);
+		expect(taskLine(task({ agent: "bare" }))).toMatch(/^✓ bare ·/);
 	});
 });
 

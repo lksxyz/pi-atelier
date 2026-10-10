@@ -1,8 +1,8 @@
 /**
  * Smoke tests: reducer (transitions, blockedBy, cycles, no-op), sanitize, graph.
- * Pure logic only — no pi runtime needed. Run: bun test
+ * Pure logic only — no pi runtime needed. Run: pnpm --filter @lukisxyz/pi-core-todo test
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { applyTaskMutation, detectCycle, isTransitionValid, sanitizeTerminalText } from "../src/state.ts";
 import { EMPTY_STATE } from "../src/types.ts";
 

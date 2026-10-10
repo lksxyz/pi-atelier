@@ -1,7 +1,7 @@
-import { expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { expect, test } from "vitest";
 import { colorNums, describeCall } from "../src/format.ts";
 import { createPeekPane, type PeekTask } from "../src/peek.ts";
 
@@ -71,7 +71,7 @@ test("peek pane: navigate + tail, never mutates tasks", () => {
 });
 
 test("a hard runtime ceiling exists; an explicit maxRuntimeMs always wins", () => {
-	const src = require("node:fs").readFileSync(new URL("../src/manager.ts", import.meta.url), "utf8");
+	const src = readFileSync(new URL("../src/manager.ts", import.meta.url), "utf8");
 	const cap = src.match(/const DEFAULT_RUNTIME_MS = ([\d_]+);/) as RegExpMatchArray | null;
 	if (!cap?.[1]) throw new Error("DEFAULT_RUNTIME_MS not found");
 	expect(Number(cap[1].replaceAll("_", ""))).toBeGreaterThan(0);
