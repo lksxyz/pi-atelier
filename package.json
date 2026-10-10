@@ -9,6 +9,9 @@
 	},
 	"scripts": {
 		"install:core": "node packages/pi-toolset/pi-toolset install",
+		"pretypecheck": "node scripts/require-node.mjs",
+		"prelint": "node scripts/require-node.mjs",
+		"pretest": "node scripts/require-node.mjs",
 		"typecheck": "pnpm -r --if-present --workspace-concurrency=1 run typecheck",
 		"lint": "pnpm -r --if-present --workspace-concurrency=1 run lint",
 		"test": "pnpm -r --if-present --workspace-concurrency=1 run test",
