@@ -144,7 +144,7 @@ describe("resolveChildModel", () => {
 
 	test("a bare id prefers the SESSION's provider over registry order", () => {
 		const shared = [
-			{ provider: "commandcode", id: "claude-sonnet-5" },
+			{ provider: "bedrock", id: "claude-sonnet-5" },
 			{ provider: "anthropic", id: "claude-sonnet-5" },
 		] as never[];
 		const sessionCtx = {
@@ -164,7 +164,7 @@ describe("resolveChildModel", () => {
 
 describe("ensureUsableModel", () => {
 	const session = { provider: "9router", id: "cc/claude-opus-5" } as never;
-	const other = { provider: "commandcode", id: "claude-sonnet-5" } as never;
+	const other = { provider: "bedrock", id: "claude-sonnet-5" } as never;
 	const makeCtx = (complete: () => Promise<unknown>) =>
 		({ model: session, modelRegistry: { complete } }) as never as Parameters<typeof ensureUsableModel>[0];
 

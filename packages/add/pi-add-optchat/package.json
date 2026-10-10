@@ -1,12 +1,21 @@
 {
   "name": "@lukisxyz/pi-add-optchat",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Pi extension for persistent chat memory with a bounded, zoomable summary tree.",
   "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",
-  "files": ["src", "README.md", "LICENSE"],
-  "keywords": ["pi", "pi-extension", "memory", "optchat"],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "memory",
+    "optchat"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
@@ -24,11 +33,18 @@
     "@types/bun": "^1.3.14",
     "typescript": "^7.0.2"
   },
-  "pi": { "extensions": ["./src/index.ts"] },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/lksxyz/pi-atelier",
     "directory": "packages/add/pi-add-optchat"
   },
-  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" }
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }

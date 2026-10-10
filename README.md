@@ -22,7 +22,6 @@ packages/
 │   └── pi-core-vision/
 ├── add/         → optional/extra extensions (opt in)
 │   ├── pi-add-code-diagnostic/
-│   ├── pi-add-commandcode/
 │   ├── pi-add-deliberate/
 │   ├── pi-add-haiku/
 │   ├── pi-add-mode/
@@ -71,7 +70,6 @@ pi -e npm:@lukisxyz/pi-core-vision
 | Package | Purpose for |
 | --- | --- |
 | [`@lukisxyz/pi-add-code-diagnostic`](packages/add/pi-add-code-diagnostic) | Repo-scoped typecheck/lint diagnostics |
-| [`@lukisxyz/pi-add-commandcode`](packages/add/pi-add-commandcode) | Command Code Provider API: 58 models, dual-endpoint routing, ZDR |
 | [`@lukisxyz/pi-add-deliberate`](packages/add/pi-add-deliberate) | Deliberate advise and plan modes backed by subagent |
 | [`@lukisxyz/pi-add-haiku`](packages/add/pi-add-haiku) | Clean header, footer, and timer following Pi's active theme |
 | [`@lukisxyz/pi-add-mode`](packages/add/pi-add-mode) | Named modes: instructions + tools + model + subagent model, `/mode` and `ctrl+tab` |
