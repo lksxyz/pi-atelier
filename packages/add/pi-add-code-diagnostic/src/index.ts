@@ -5,9 +5,9 @@
 // Config per repo root: ~/.pi/repos/<root-sanitized>.json
 //   { "check": "tsc --noEmit", "fileCheck": "eslint ${file}", "enabled": true,
 //     "testedAt": "...", "lastExit": 0, "parentRoot": "/path/to/parent" }
-// Missing config → one steering message per session asks the agent to discover
-// the repo's check commands, self-test them, confirm with the user, and write
-// the config. No config that matches → enabled:false, silent forever after.
+// Missing config → the user gets one UI notice per session (no agent turn);
+// discovery only runs when the user explicitly invokes /diagnostic init.
+// No config that matches → enabled:false, silent forever after.
 //
 // ⚠️ shell operators (&&  |  ;  redirects  subshells) in a check are wrapped in
 //    `bash -lc` so repo commands like "npm install && npm run check" work — no naive
@@ -113,17 +113,52 @@ export function isBrokenRun(res: { stdout: string; stderr: string; code: number 
 export function truncate(s: string, max = MAX_REPORT): string {
 	return s.length <= max ? s : `${s.slice(0, max)}\n… (${s.length - max} more chars truncated)`;
 }
+/** Discovery instructions for the agent. Sent only when the user runs /diagnostic init. */
+export function discoveryPrompt(root: string): string {
+	return [
+		`This repo (${root}) has no code-diagnostic config yet.`,
+		"Discover it once: inspect the repo (package.json scripts, tsconfig.json, Cargo.toml, go.mod, CMakeLists.txt...),",
+		"propose a `check` command (and optional `fileCheck` with ${file} placeholder for per-file linting).",
+		"Commands run argv-direct unless they contain a shell operator ( & | ; > < ` ( ) ) — an env assignment or `&&` chain must include one or it is spawned as a program name.",
+		"Self-test the proposed command once via your bash tool, then ask the user (ask_user_question, single select):",
+		"keep → write config JSON {check, fileCheck?, enabled: true} to " + configPath(root),
+		"rescan → propose a different command (max 2 attempts)",
+		"off → write {check, enabled: false}",
+		"If nothing in this repo fits any checker, write {check: '<repo build/check command>', enabled: true} or off.",
+		"Keep the schema exactly as specified. Do not add fields.",
+	].join("\n");
+}
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("diagnostic", {
-		description: "show code-diagnostic config, run check now, or clear config",
+		description: "show code-diagnostic config, run check now, init discovery, or clear config",
 		getArgumentCompletions: (prefix) =>
-			["status", "run", "clear"].filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s })),
+			["status", "run", "clear", "init"].filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s })),
 		handler: (args, ctx) =>
 			Effect.runPromise(
 				Effect.gen(function* () {
 					const sub = args.trim().split(/\s+/)[0];
 					const found = findConfig(ctx.cwd);
+					if (sub === "init") {
+						// discovery is opt-in: the agent loop never starts it on its own
+						if (found) {
+							ctx.ui.notify(
+								`code-diagnostic already configured for ${found.root} (enabled: ${found.config.enabled}) — run /diagnostic clear first to re-discover`,
+								"info",
+							);
+							return;
+						}
+						const probe = repoRootsUp(ctx.cwd).find(hasGitMarker);
+						if (!probe) {
+							ctx.ui.notify("not inside a git repo — nothing to configure", "warning");
+							return;
+						}
+						pi.sendMessage(
+							{ customType: "code-diagnostic-discovery", display: true, content: discoveryPrompt(probe) },
+							{ triggerTurn: true, deliverAs: "followUp" },
+						);
+						return;
+					}
 					if (sub === "clear") {
 						let removed = 0;
 						for (const root of repoRootsUp(ctx.cwd)) {
@@ -136,7 +171,7 @@ export default function (pi: ExtensionAPI) {
 						loadFor(ctx.cwd);
 						ctx.ui.notify(
 							removed
-								? `code-diagnostic config cleared (${removed}) — discovery will re-run`
+								? `code-diagnostic config cleared (${removed}) — run /diagnostic init to rediscover`
 								: "no config found to clear",
 							"info",
 						);
@@ -145,7 +180,7 @@ export default function (pi: ExtensionAPI) {
 					if (sub === "run") {
 						if (!found) {
 							ctx.ui.notify(
-								"no code-diagnostic config for this repo yet — run /diagnostic or wait for discovery",
+								"no code-diagnostic config for this repo yet — run /diagnostic init to set one up",
 								"info",
 							);
 							return;
@@ -163,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					// default status
 					if (!found) {
-						ctx.ui.notify("no code-diagnostic config for this repo — discovery will propose one", "info");
+						ctx.ui.notify("no code-diagnostic config for this repo — run /diagnostic init to set one up", "info");
 						return;
 					}
 					const c = found.config;
@@ -189,7 +224,7 @@ export default function (pi: ExtensionAPI) {
 	const inFlight = new Set<Promise<unknown>>(); // fileCheck runs not yet folded into fileErrors
 	let timeoutReported = false; // check exceeded its timeout — say so once, not every settle
 	let checkedOnce = false; // baseline check done this session
-	let askedDiscovery = false; // discovery steering sent this session
+	let discoveryHinted = false; // passive "no config" UI notice shown this session
 	let lastRunAborted = false; // last agent run ended aborted/errored
 
 	function loadFor(cwd: string) {
@@ -200,7 +235,7 @@ export default function (pi: ExtensionAPI) {
 		inFlight.clear();
 		timeoutReported = false;
 		checkedOnce = false;
-		askedDiscovery = false;
+		discoveryHinted = false;
 		lastRunAborted = false;
 		current = findConfig(cwd);
 	}
@@ -305,29 +340,15 @@ export default function (pi: ExtensionAPI) {
 			Effect.gen(function* () {
 				if (!current) current = findConfig(ctx.cwd); // discovery may have written config this session
 				if (!current) {
-					if (!askedDiscovery) {
-						// no config seen this session — ask the agent to discover it, once, and only for real projects
-						askedDiscovery = true;
+					if (!discoveryHinted) {
+						// no config seen this session — tell the user once, in the UI only.
+						// never sends a message and never wakes the agent: discovery is /diagnostic init.
+						discoveryHinted = true;
 						const probe = repoRootsUp(ctx.cwd).find(hasGitMarker);
 						if (!probe) return; // non-git dir (home, scratch): nothing to check here, stay silent
-						pi.sendMessage(
-							{
-								customType: "code-diagnostic-discovery",
-								display: true,
-								content: [
-									`This repo (${probe}) has no code-diagnostic config yet.`,
-									`Discover it once: inspect the repo (package.json scripts, tsconfig.json, Cargo.toml, go.mod, CMakeLists.txt...),`,
-									"propose a `check` command (and optional `fileCheck` with ${file} placeholder for per-file linting).",
-									"Self-test the proposed command once via your bash tool, then ask the user (ask_user_question, single select):",
-									"keep → write config JSON {check, fileCheck?, enabled: true} to " +
-										configPath(probe),
-									"rescan → propose a different command (max 2 attempts)",
-									"off → write {check, enabled: false}",
-									"If nothing in this repo fits any checker, write {check: '<repo build/check command>', enabled: true} or off.",
-									"Keep the schema exactly as specified. Do not add fields.",
-								].join("\n"),
-							},
-							{ triggerTurn: true, deliverAs: "followUp" },
+						ctx.ui.notify(
+							`no code-diagnostic config for ${probe} — run /diagnostic init to set one up`,
+							"info",
 						);
 					}
 					return;
